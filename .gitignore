@@ -1,5 +1,6 @@
 /build
 /build*/
+/dist/
 clang
 *.kdev4
 Makefile
@@ -18,6 +19,7 @@ KDEConnect.includes
 *.rej
 .vscode
 .github/workflows/*
+!.github/workflows/windows-packages.yml
 
 # Eclipse settings
 .cproject

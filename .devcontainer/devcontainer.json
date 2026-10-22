@@ -1,0 +1,29 @@
+{
+    "init": true,
+    "name": "KDE Connect",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "remoteUser": "vscode",
+    "capAdd": ["SYS_PTRACE"],
+    "securityOpt": ["seccomp=unconfined"],
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools",
+                "ms-vscode.cmake-tools",
+                "TheQtCompany.qt-qml",
+                "GitHub.vscode-github-actions"
+            ],
+            "settings": {
+                "cmake.generator": "Ninja",
+                "cmake.buildDirectory": "${workspaceFolder}/build",
+                "cmake.configureSettings": {
+                    "CMAKE_BUILD_TYPE": "Debug",
+                    "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+                    "CMAKE_INSTALL_PREFIX": "${workspaceFolder}/build/install"
+                }
+            }
+        }
+    }
+}
