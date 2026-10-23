@@ -14,6 +14,7 @@
 #include <QFileDialog>
 #include <QIcon>
 #include <QListWidget>
+#include <QLocale>
 #include <QMessageBox>
 #include <QQuickStyle>
 #include <QTextStream>
@@ -48,11 +49,14 @@ enum class HandlerMode {
 
 int main(int argc, char **argv)
 {
+    qputenv("LANGUAGE", "en_US");
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
 #if defined(Q_OS_WIN) || defined(Q_OS_MAC)
     // Install KIconEngine so widget icons get recolored in dark mode. Must be called before QApplication.
     KIconTheme::initTheme();
 #endif
     QApplication app(argc, argv);
+    KLocalizedString::setLanguages({QStringLiteral("en_US")});
     app.setWindowIcon(QIcon::fromTheme(QStringLiteral("kdeconnect")));
     const QString description = i18n("KDE Connect URL handler");
     KAboutData aboutData(QStringLiteral("kdeconnect.handler"),

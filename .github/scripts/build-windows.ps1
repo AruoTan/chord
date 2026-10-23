@@ -95,9 +95,19 @@ try {
     if ($unexpectedPlugins.Count) {
         throw "Portable archive contains excluded plugins: $($unexpectedPlugins.Name -join ', ')"
     }
+    $translationFiles = @(Get-ChildItem $probe -Recurse -File | Where-Object {
+        $relative = [IO.Path]::GetRelativePath($probe, $_.FullName).Replace('\', '/')
+        $englishLocale = $relative -match '(^|/)locale/en(?:_[A-Za-z0-9]+)*/'
+        $englishQtCatalog = $_.Extension -eq '.qm' -and $_.BaseName -match '(^|_)en(?:_[A-Za-z0-9]+)*$'
+        ($relative -match '(^|/)locale/' -and -not $englishLocale) -or
+            ($_.Extension -in '.mo', '.qm' -and -not ($englishLocale -or $englishQtCatalog))
+    })
+    if ($translationFiles.Count) {
+        throw "Portable archive contains non-English translation resources: $($translationFiles.FullName -join ', ')"
+    }
     # Do not allow DLLs from the build environment to conceal missing dependencies.
     $probeVariables = @('PATH', 'QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH',
-        'QML2_IMPORT_PATH', 'QML_IMPORT_PATH', 'QT_DATA_DIRS', 'XDG_DATA_DIRS')
+        'QML2_IMPORT_PATH', 'QML_IMPORT_PATH', 'QT_DATA_DIRS', 'XDG_DATA_DIRS', 'DBUS_SESSION_BUS_ADDRESS')
     $previousEnvironment = @{}
     try {
         foreach ($name in $probeVariables) {
@@ -105,7 +115,9 @@ try {
             [Environment]::SetEnvironmentVariable($name, $null)
         }
         $env:PATH = "$probe/bin;$env:SystemRoot/System32;$env:SystemRoot"
-        foreach ($check in 'version', 'help') {
+        # Exercise D-Bus cleanup without starting a daemon or contacting the user's session.
+        $env:DBUS_SESSION_BUS_ADDRESS = 'kdeconnect-test-invalid-transport:'
+        foreach ($check in 'version', 'help', 'my-id', 'pair', 'list-available') {
             Write-Host "[$(Get-Date -Format o)] Checking portable CLI --$check (30-second timeout)"
             $probeStdout = Join-Path $env:TEMP "kdeconnect-portable-probe.$check.stdout.log"
             $probeStderr = Join-Path $env:TEMP "kdeconnect-portable-probe.$check.stderr.log"
@@ -117,8 +129,19 @@ try {
                     $null = $probeProcess.WaitForExit(5000)
                     throw 'Portable CLI startup timed out after 30 seconds; see kdeconnect-portable-probe logs'
                 }
-                if ($probeProcess.ExitCode -ne 0) {
-                    throw "Portable CLI failed to start outside Craft (exit code $($probeProcess.ExitCode))"
+                $expectedExitCode = if ($check -in 'pair', 'list-available') { 1 } else { 0 }
+                if ($probeProcess.ExitCode -ne $expectedExitCode) {
+                    throw "Portable CLI --$check returned $($probeProcess.ExitCode); expected $expectedExitCode"
+                }
+                $stderrText = [IO.File]::ReadAllText($probeStderr)
+                if ($stderrText.Contains('QEventDispatcherWin32::wakeUp')) {
+                    throw "Portable CLI --$check reported an invalid event-dispatcher window during shutdown"
+                }
+                if ($check -eq 'pair' -and -not $stderrText.Contains('No device specified')) {
+                    throw 'Portable CLI did not exercise the missing-device return path'
+                }
+                if ($check -eq 'list-available' -and -not $stderrText.Contains('error: ')) {
+                    throw 'Portable CLI did not exercise the D-Bus error exit path'
                 }
                 if ($check -eq 'help') {
                     $helpText = Get-Content $probeStdout -Raw

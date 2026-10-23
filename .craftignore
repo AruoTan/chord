@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: CC0-1.0
+
+# Keep English catalogs used for plural forms; remove other languages.
+(.*/)?locale/(?!en(?:_[A-Za-z0-9]+)*(?:/|$)).*
+(?!.*(?:^|/)locale/en(?:_[A-Za-z0-9]+)*/)(?!(?:.*/)?(?:[^/]+_)?en(?:_[A-Za-z0-9]+)*\.qm$).*\.(mo|qm)

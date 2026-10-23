@@ -7,6 +7,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QIcon>
+#include <QLocale>
 #include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
@@ -38,7 +39,10 @@ static void raiseWindow(QWindow *window)
 
 int main(int argc, char *argv[])
 {
+    qputenv("LANGUAGE", "en_US");
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
     QApplication app(argc, argv);
+    KLocalizedString::setLanguages({QStringLiteral("en_US")});
     KLocalizedString::setApplicationDomain("kdeconnect-app");
     app.setWindowIcon(QIcon::fromTheme(QStringLiteral("kdeconnect")));
     KAboutData aboutData(QStringLiteral("kdeconnect.app"),

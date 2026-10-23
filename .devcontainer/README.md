@@ -52,6 +52,13 @@ with the current upstream Craft tool and dependency blueprints; it does not
 build an unrelated upstream KDE Connect release. No signing credentials are
 required.
 
+Application messages use English regardless of the system language. Project
+translation catalogs are not built or installed. The `.craftignore` file also
+excludes non-English Qt and KDE dependency catalogs from both Windows packages;
+English dependency catalogs used for plural forms are retained. The archive
+check rejects non-English catalogs. Device names and received content still use
+the text supplied by the peer.
+
 Windows packages enable `KDECONNECT_BUILD_REDUCED_PLUGIN_SET`. The following
 plugins are neither built nor installed:
 
@@ -129,8 +136,11 @@ Download the `kdeconnect-windows-x64-<commit>` artifact after a successful run:
 - `SHA256SUMS`: SHA256 checksums for both packages.
 
 The job extracts the archive and runs its CLI with Craft removed from PATH.
-This is a packaging smoke test; GUI startup, pairing, firewall access and
-installation should still be checked on a separate Windows machine.
+It checks help/version and D-Bus shutdown with an intentionally invalid bus
+address, covering normal completion, missing-device returns and D-Bus error
+exits. Event-dispatcher window warnings fail the check. This is a packaging
+smoke test; GUI startup, pairing, firewall access and installation should still
+be checked on a separate Windows machine.
 
 For Scoop, optionally set `scoop_base_url` when starting the workflow to the
 HTTPS directory where you will host the generated `.7z`. The artifact will

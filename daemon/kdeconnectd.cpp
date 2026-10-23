@@ -9,6 +9,7 @@
 #include <QCommandLineParser>
 #include <QDBusMessage>
 #include <QIcon>
+#include <QLocale>
 #include <QQuickStyle>
 #include <QStandardPaths>
 #include <QTimer>
@@ -59,6 +60,8 @@ static void detectPlatform(int argc, char **argv)
 
 int main(int argc, char *argv[])
 {
+    qputenv("LANGUAGE", "en_US");
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
 #ifdef Q_OS_WIN
     // If ran from a console, redirect the output there
     if (AttachConsole(ATTACH_PARENT_PROCESS)) {
@@ -77,6 +80,7 @@ int main(int argc, char *argv[])
     qputenv("SOLID_DISABLE_KDECONNECT", "1");
 
     QApplication app(argc, argv);
+    KLocalizedString::setLanguages({QStringLiteral("en_US")});
     KAboutData aboutData(QStringLiteral("kdeconnect.daemon"),
                          i18n("KDE Connect Daemon"),
                          QStringLiteral(KDECONNECT_VERSION_STRING),
