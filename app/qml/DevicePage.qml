@@ -5,10 +5,8 @@
  */
 
 import QtQuick
-import QtCore
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
-import QtQuick.Dialogs
 import QtQml.Models
 import org.kde.kirigami as Kirigami
 import org.kde.kdeconnect
@@ -220,8 +218,12 @@ Kirigami.ScrollablePage {
             },
             PluginItem {
                 pluginName: "share"
-                name: i18nd("kdeconnect-app", "Share File")
-                onClick: () => fileDialog.open()
+                name: i18nd("kdeconnect-app", "Share Files and Folders")
+                onClick: () => pageStack.pushDialogLayer(Qt.resolvedUrl("ShareFiles.qml"), {
+                    deviceId: root.currentDevice.id()
+                }, {
+                    title: i18nd("kdeconnect-app", "Share Files and Folders")
+                })
                 section: "action"
                 device: root.currentDevice
             },
@@ -325,12 +327,4 @@ Kirigami.ScrollablePage {
         }
     }
 
-    FileDialog {
-        id: fileDialog
-        readonly property var shareIface: root.currentDevice ? ShareDbusInterfaceFactory.create(root.currentDevice.id()) : null
-        title: i18nd("kdeconnect-app", "Please choose a file")
-        currentFolder: StandardPaths.standardLocations(StandardPaths.HomeLocation)[0]
-        fileMode: FileDialog.OpenFiles
-        onAccepted: shareIface.shareUrls(fileDialog.selectedFiles)
-    }
 }

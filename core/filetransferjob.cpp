@@ -9,9 +9,13 @@
 #include "daemon.h"
 #include <core_debug.h>
 
+#include <QAbstractSocket>
+#include <QCryptographicHash>
 #include <QDebug>
+#include <QDir>
 #include <QFileInfo>
 #include <QNetworkAccessManager>
+#include <QtConcurrentRun>
 #include <qalgorithms.h>
 
 #include <KFileUtils>
@@ -27,6 +31,7 @@ FileTransferJob::FileTransferJob(const NetworkPacket *np, const QUrl &destinatio
     , m_size(np->payloadSize())
     , m_np(np)
     , m_autoRename(false)
+    , m_expectedChecksum(np->get<QString>(QStringLiteral("sha256")).toLatin1())
 {
     // m_origin can be null when the packet has no payload (e.g. an empty file): we still want to
     // go through the same job so it gets counted, auto-renamed and timestamped like any other file.
@@ -43,7 +48,7 @@ FileTransferJob::FileTransferJob(const NetworkPacket *np, const QUrl &destinatio
 
 void FileTransferJob::start()
 {
-    if (m_destination.isLocalFile() && QFile::exists(m_destination.toLocalFile())) {
+    if (m_destination.isLocalFile() && QFile::exists(m_destination.toLocalFile()) && !m_directory) {
         if (m_autoRename) {
             QFileInfo fileInfo(m_destination.toLocalFile());
             QString path = fileInfo.path();
@@ -62,27 +67,71 @@ void FileTransferJob::start()
 
 void FileTransferJob::doStart()
 {
-    if (!m_origin) {
+    if (isFinished()) {
+        return;
+    }
+    if (!isSafeDestination()) {
+        setError(UserDefinedError);
+        setErrorText(i18n("Unsafe destination path: %1", m_destination.toLocalFile()));
+        emitResult();
+        return;
+    }
+    if (m_directory) {
+        if (!QDir().mkpath(m_destination.toLocalFile())) {
+            setError(UserDefinedError);
+            setErrorText(i18n("Could not create destination folder: %1", m_destination.toLocalFile()));
+        }
+        emitResult();
+        return;
+    }
+    if (!m_origin && m_size != 0) {
+        setError(UserDefinedError);
+        setErrorText(i18n("Missing file payload from: %1", m_from));
+        emitResult();
+        return;
+    }
+    if (!m_origin || m_size == 0) {
         // No payload to transfer (e.g. an empty file): just create the destination file.
         QFile file(m_destination.toLocalFile());
         if (!file.open(QIODevice::WriteOnly)) {
             setError(1);
             setErrorText(i18n("Could not create destination file: %1", m_destination.toLocalFile()));
         }
-        emitResult();
+        file.close();
+        verifyChecksum();
         return;
     }
 
-    if (m_origin->bytesAvailable())
-        startTransfer();
-
     connect(m_origin.data(), &QIODevice::readyRead, this, &FileTransferJob::startTransfer);
+    connect(m_origin.data(), &QIODevice::readChannelFinished, this, &FileTransferJob::sourceFinished);
+    if (m_origin->bytesAvailable()) {
+        startTransfer();
+    } else if (auto *socket = qobject_cast<QAbstractSocket *>(m_origin.data()); socket && socket->state() == QAbstractSocket::UnconnectedState) {
+        sourceFinished();
+    }
+}
+
+void FileTransferJob::sourceFinished()
+{
+    if (m_reply || isFinished()) {
+        return;
+    }
+    if (m_origin->bytesAvailable()) {
+        startTransfer();
+    } else if (m_size > 0) {
+        setError(UserDefinedError);
+        setErrorText(i18n("Received incomplete file from: %1", m_from));
+        emitResult();
+    } else {
+        m_size = 0;
+        doStart();
+    }
 }
 
 void FileTransferJob::startTransfer()
 {
     // Don't put each ready read
-    if (m_reply)
+    if (m_reply || isFinished())
         return;
 
     setProcessedAmount(Bytes, 0);
@@ -111,12 +160,14 @@ void FileTransferJob::startTransfer()
 
 void FileTransferJob::transferFinished()
 {
+    if (isFinished()) {
+        return;
+    }
     if (m_reply->error()) {
         qCDebug(KDECONNECT_CORE) << "Couldn't transfer the file successfully" << m_reply->error() << m_reply->errorString();
         setError(m_reply->error());
         setErrorText(m_reply->errorString());
     } else {
-        // TODO: MD5-check the file
         // A payload size of -1 means the sender does not know how much it is going to send,
         // and a sender can also announce less than it ends up sending, so only a file that
         // stops short of the announced size is an incomplete one.
@@ -135,12 +186,65 @@ void FileTransferJob::transferFinished()
             qCDebug(KDECONNECT_CORE) << "Finished transfer" << m_destination;
         }
     }
-    emitResult();
+    verifyChecksum();
+}
+
+bool FileTransferJob::isSafeDestination() const
+{
+    if (m_destinationRoot.isEmpty()) {
+        return true;
+    }
+    const QString path = QDir::cleanPath(m_destination.toLocalFile());
+    if (path != m_destinationRoot && !path.startsWith(m_destinationRoot + QLatin1Char('/'))) {
+        return false;
+    }
+    QString current = path;
+    while (true) {
+        const QFileInfo info(current);
+        if (info.isSymLink() || info.isJunction()) {
+            return false;
+        }
+        if (current == m_destinationRoot) {
+            return info.isDir();
+        }
+        current = info.absolutePath();
+    }
+}
+
+void FileTransferJob::verifyChecksum()
+{
+    if (isFinished()) {
+        return;
+    }
+    if (error() || m_expectedChecksum.isEmpty()) {
+        emitResult();
+        return;
+    }
+    const QString path = m_destination.toLocalFile();
+    connect(&m_checksumWatcher, &QFutureWatcher<QByteArray>::finished, this, [this] {
+        if (isFinished()) {
+            return;
+        }
+        if (m_checksumWatcher.result() != m_expectedChecksum) {
+            deleteDestinationFile();
+            setError(UserDefinedError);
+            setErrorText(i18n("SHA-256 verification failed: %1", m_destination.toLocalFile()));
+        }
+        emitResult();
+    });
+    m_checksumWatcher.setFuture(QtConcurrent::run([path] {
+        QFile file(path);
+        QCryptographicHash hash(QCryptographicHash::Sha256);
+        if (!file.open(QIODevice::ReadOnly) || !hash.addData(&file)) {
+            return QByteArray();
+        }
+        return hash.result().toHex();
+    }));
 }
 
 void FileTransferJob::deleteDestinationFile()
 {
-    if (m_destination.isLocalFile() && QFile::exists(m_destination.toLocalFile())) {
+    if (!m_directory && isSafeDestination() && m_destination.isLocalFile() && QFile::exists(m_destination.toLocalFile())) {
         QFile::remove(m_destination.toLocalFile());
     }
 }

@@ -33,22 +33,28 @@ bool CompositeFileTransferJob::isRunning() const
 
 void CompositeFileTransferJob::start()
 {
+    if (m_running || !hasSubjobs()) {
+        return;
+    }
     QMetaObject::invokeMethod(this, "startNextSubJob", Qt::QueuedConnection);
     m_running = true;
 }
 
 void CompositeFileTransferJob::startNextSubJob()
 {
+    if (!m_running || m_currentJob || !hasSubjobs()) {
+        return;
+    }
     m_currentJob = qobject_cast<FileTransferJob *>(subjobs().at(0));
     m_currentJobSentPayloadSize = 0;
 
-    m_currentJob->start();
     Q_EMIT description(this,
                        i18ncp("@title job", "Receiving file", "Receiving files", m_totalJobs),
                        {i18nc("The source of a file operation", "Source"), this->m_device->name()},
                        {i18nc("The destination of a file operation", "Destination"), m_currentJob->destination().toDisplayString(QUrl::PreferLocalFile)});
 
     connect(m_currentJob, &FileTransferJob::processedAmountChanged, this, &CompositeFileTransferJob::slotProcessedAmount);
+    m_currentJob->start();
 }
 
 bool CompositeFileTransferJob::addSubjob(KJob *job)
@@ -66,7 +72,7 @@ bool CompositeFileTransferJob::addSubjob(KJob *job)
             setTotalAmount(Files, m_totalJobs);
         }
 
-        if (!hasSubjobs()) {
+        if (m_running && !hasSubjobs()) {
             QMetaObject::invokeMethod(this, "startNextSubJob", Qt::QueuedConnection);
         }
 
@@ -111,6 +117,7 @@ void CompositeFileTransferJob::slotProcessedAmount(KJob * /*job*/, KJob::Unit un
 
 void CompositeFileTransferJob::slotResult(KJob *job)
 {
+    m_currentJob = nullptr;
     // Copies job error and errorText and emits result if job is in error otherwise removes job from subjob list
     KCompositeJob::slotResult(job);
 
@@ -129,7 +136,7 @@ void CompositeFileTransferJob::slotResult(KJob *job)
     setProcessedAmount(Bytes, m_totalSentPayloadSize);
     setProcessedAmount(Files, m_currentJobNum);
 
-    if (m_currentJobNum < m_totalJobs) {
+    if (hasSubjobs() || m_currentJobNum < m_totalJobs) {
         m_currentJobNum++;
         if (!subjobs().empty()) {
             startNextSubJob();

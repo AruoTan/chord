@@ -1,11 +1,32 @@
+Files use kdeconnect.share.request with a filename and an optional payload.
+An empty file has a filename and no payload. Incoming files are saved in the
+configured download directory and renamed when the destination already exists.
+The optional sha256 field contains the lowercase SHA-256 digest of the file.
+This version computes it before sending and verifies it after writing the
+received file. A mismatch is reported as an error and the file is deleted.
+Hashing runs in background threads. Older clients can receive ordinary files
+but do not verify this field; files from clients without it remain supported.
+The sender's upload completion is not an acknowledgement of receiver verification.
 
-It receives a packages with type kdeconnect.share. If they have a payload
-attached, it will download it as a file with the filename set in the field
-"filename" (string). If that field is not set it should generate a filename.
+Folders require both devices to advertise kdeconnect.share.request.folder.
+Each folder has a UUID folderId, folderName, entryCount, and ordered entryIndex
+starting at zero. Each entry uses this packet type with a relativePath and a
+directory boolean. Entry zero is the root directory with an empty relativePath.
+Directories have no payload; regular files include a filename, payload (unless
+empty), and sha256. All entries go through the existing upload/download queues.
+The receiver reserves a new root directory, renaming the whole root on collision.
+Directory entries precede their children, preserving empty folders. Paths must
+stay inside that root and may not traverse symbolic links or Windows junctions.
+Links, special files, case-only name collisions, and names incompatible with
+Windows are rejected during preparation. Transfers are limited to one million
+entries per root and a nesting depth of 256. Failed transfers can leave partial
+folders; there is no resume or automatic rollback of previously received files.
 
-If the content transferred is text, it can be sent in a field "text" (string)
-instead of an attached payload. In that case, this plugin opens a text editor
-with the content instead of saving it as a file.
+The app's Share Files and Folders dialog lets users add multiple files and
+folders to one selection. Add Folder can be used repeatedly before Send.
+The CLI also accepts mixed selections, for example on Windows:
 
-If the content transferred is a url, it can be sent in a field "url" (string).
-In that case, this plugin opens that url in the default browser.
+    kdeconnect-cli --device DEVICE_ID --share "C:\Folder A" "C:\Folder B" "C:\file.txt"
+
+Text uses a text field instead of a payload and is copied to the clipboard.
+Web links use a url field and open in the default browser.

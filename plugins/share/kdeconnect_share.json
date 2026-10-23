@@ -140,9 +140,11 @@
     },
     "X-KdeConnect-OutgoingPacketType": [
         "kdeconnect.share.request",
+        "kdeconnect.share.request.folder",
         "kdeconnect.share.request.update"
     ],
     "X-KdeConnect-SupportedPacketType": [
-        "kdeconnect.share.request"
+        "kdeconnect.share.request",
+        "kdeconnect.share.request.folder"
     ]
 }

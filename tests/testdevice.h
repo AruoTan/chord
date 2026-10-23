@@ -45,6 +45,9 @@ private:
 
 public Q_SLOTS:
     bool sendPacket(NetworkPacket &np) override;
+
+Q_SIGNALS:
+    void packetSent(const NetworkPacket &packet);
 };
 
 #endif

@@ -71,7 +71,7 @@ QHostAddress LanDeviceLink::hostAddress() const
 bool LanDeviceLink::sendPacket(NetworkPacket &np)
 {
     // FIXME: Remove packet-type-specific logic from the link
-    if (np.type() == PACKET_TYPE_SHARE_REQUEST && np.payload()) {
+    if ((np.type() == PACKET_TYPE_SHARE_REQUEST || np.type() == PACKET_TYPE_SHARE_REQUEST_FOLDER) && np.payload()) {
         // A new file to share (even one with no payload, like an empty file, which still has a
         // payload device attached by SharePlugin::shareUrl() even though its size is 0). This
         // goes through the composite job so it gets counted and sequenced with the others.

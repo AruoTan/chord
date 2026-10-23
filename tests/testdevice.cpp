@@ -35,6 +35,7 @@ bool TestDevice::sendPacket(NetworkPacket &np)
         lastPacket->set(iter.key(), iter.value());
     lastPacket->setPayload(np.payload(), np.payloadSize());
     lastPacket->setPayloadTransferInfo(np.payloadTransferInfo());
+    Q_EMIT packetSent(np);
     return true;
 }
 

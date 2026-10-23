@@ -115,7 +115,7 @@ int main(int argc, char **argv)
     parser.addOption(QCommandLineOption(QStringLiteral("ping"), i18n("Send ping to device")));
     parser.addOption(QCommandLineOption(QStringLiteral("ping-msg"), i18n("Same as ping but you can set the message to display"), i18n("message")));
     parser.addOption(QCommandLineOption(QStringLiteral("send-clipboard"), i18n("Send clipboard to device")));
-    parser.addOption(QCommandLineOption(QStringLiteral("share"), i18n("Share file/URL to device"), QStringLiteral("path or URL")));
+    parser.addOption(QCommandLineOption(QStringLiteral("share"), i18n("Share files, folders or URLs to device"), QStringLiteral("path or URL")));
     parser.addOption(QCommandLineOption(QStringLiteral("share-text"), i18n("Share text to device"), QStringLiteral("text")));
     parser.addOption(QCommandLineOption(QStringLiteral("list-notifications"), i18n("Display notifications on device")));
     parser.addOption(QCommandLineOption(QStringLiteral("lock"), i18n("Lock the specified device")));

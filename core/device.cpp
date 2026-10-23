@@ -387,6 +387,11 @@ bool Device::sendPacket(NetworkPacket &np)
     return false;
 }
 
+bool Device::supportsPacketType(const QString &type) const
+{
+    return d->m_deviceInfo.incomingCapabilities.contains(type);
+}
+
 void Device::privateReceivedPacket(const NetworkPacket &np)
 {
     if (np.type() == PACKET_TYPE_PAIR) {

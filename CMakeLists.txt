@@ -121,7 +121,7 @@ ecm_find_qmlmodule(QtQuick.Particles 2.0)
 
 add_definitions(-DQT_NO_URL_CAST_FROM_STRING -DQT_NO_KEYWORDS -DQT_NO_CAST_FROM_ASCII -DQT_NO_CONTEXTLESS_CONNECT)
 
-find_package(Qt6 ${QT_MIN_VERSION} REQUIRED COMPONENTS DBus Quick QuickWidgets QuickControls2 Network Multimedia)
+find_package(Qt6 ${QT_MIN_VERSION} REQUIRED COMPONENTS Concurrent DBus Quick QuickWidgets QuickControls2 Network Multimedia)
 
 if (Qt6Gui_VERSION VERSION_GREATER_EQUAL "6.10.0")
     find_package(Qt6GuiPrivate ${REQUIRED_QT_VERSION} REQUIRED NO_MODULE)

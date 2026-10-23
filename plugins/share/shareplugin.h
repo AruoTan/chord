@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <QHash>
 #include <QPointer>
 
 #include <core/compositefiletransferjob.h>
@@ -13,6 +14,7 @@
 
 #define PACKET_TYPE_SHARE_REQUEST QStringLiteral("kdeconnect.share.request")
 #define PACKET_TYPE_SHARE_REQUEST_UPDATE QStringLiteral("kdeconnect.share.request.update")
+#define PACKET_TYPE_SHARE_REQUEST_FOLDER QStringLiteral("kdeconnect.share.request.folder")
 
 class SharePlugin : public KdeConnectPlugin
 {
@@ -46,10 +48,15 @@ Q_SIGNALS:
 private:
     void finished(KJob *job, const qint64 dateCreated, const qint64 dateModified, const bool open);
     void shareUrl(const QUrl &url, bool open);
+    void prepareShare(const QStringList &urls, bool open);
+    void receiveFolderEntry(const NetworkPacket &np);
+    void addTransferJob(FileTransferJob *job);
     QUrl destinationDir() const;
     QUrl getFileDestination(const QString filename) const;
     void setDateModified(const QUrl &destination, const qint64 timestamp);
     void setDateCreated(const QUrl &destination, const qint64 timestamp);
 
     QPointer<CompositeFileTransferJob> m_compositeJob;
+    struct IncomingFolder;
+    QHash<QString, QSharedPointer<IncomingFolder>> m_incomingFolders;
 };

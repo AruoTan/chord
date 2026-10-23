@@ -56,6 +56,7 @@ PUBLIC
     KF6::KIOGui
     OpenSSL::Crypto
 PRIVATE
+    Qt::Concurrent
     Qt::DBus
     KF6::I18n
     KF6::ConfigCore

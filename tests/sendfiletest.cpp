@@ -4,16 +4,20 @@
  * SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
  */
 
+#include <QBuffer>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QScopeGuard>
 #include <QSignalSpy>
 #include <QSocketNotifier>
 #include <QStandardPaths>
 #include <QTcpSocket>
+#include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QTest>
 #include <backends/lan/uploadjob.h>
 #include <core/filetransferjob.h>
+#include <core/pluginloader.h>
 #include <kdeconnectconfig.h>
 
 #include "core/daemon.h"
@@ -38,6 +42,319 @@ public:
     }
 
 private Q_SLOTS:
+    void testChecksum_data()
+    {
+        QTest::addColumn<QByteArray>("content");
+        QTest::addColumn<bool>("valid");
+        QTest::newRow("valid") << QByteArray("file contents") << true;
+        QTest::newRow("same-size-corruption") << QByteArray("file contents") << false;
+        QTest::newRow("valid-empty") << QByteArray() << true;
+        QTest::newRow("corrupt-empty") << QByteArray() << false;
+    }
+
+    void testChecksum()
+    {
+        QFETCH(QByteArray, content);
+        QFETCH(bool, valid);
+        QTemporaryDir destination;
+        QVERIFY(destination.isValid());
+        const QString path = destination.filePath(QStringLiteral("received.txt"));
+        auto input = QSharedPointer<QBuffer>::create();
+        input->setData(content);
+        QVERIFY(input->open(QIODevice::ReadOnly));
+        NetworkPacket packet(PACKET_TYPE_SHARE_REQUEST);
+        packet.setPayload(input, content.size());
+        const QByteArray expected = valid ? content : QByteArray(content.size(), 'x');
+        const QByteArray digest = QCryptographicHash::hash(valid || !content.isEmpty() ? expected : QByteArray("x"), QCryptographicHash::Sha256).toHex();
+        packet.set(QStringLiteral("sha256"), QString::fromLatin1(digest));
+        auto *job = packet.createPayloadTransferJob(QUrl::fromLocalFile(path));
+        job->setAutoDelete(false);
+        const auto cleanup = qScopeGuard([job] {
+            delete job;
+        });
+        QSignalSpy result(job, &KJob::result);
+        job->start();
+        QVERIFY(result.wait());
+        QCOMPARE(job->error() == 0, valid);
+        QCOMPARE(QFileInfo::exists(path), valid);
+        if (valid) {
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            QCOMPARE(file.readAll(), content);
+        }
+    }
+
+    void testMissingPayload_data()
+    {
+        QTest::addColumn<bool>("stream");
+        QTest::newRow("missing-payload") << false;
+        QTest::newRow("closed-empty-stream") << true;
+    }
+
+    void testMissingPayload()
+    {
+        QFETCH(bool, stream);
+        QTemporaryDir destination;
+        QVERIFY(destination.isValid());
+        auto input = QSharedPointer<QBuffer>::create();
+        QVERIFY(input->open(QIODevice::ReadOnly));
+        NetworkPacket packet(PACKET_TYPE_SHARE_REQUEST);
+        packet.setPayload(stream ? input : QSharedPointer<QIODevice>(), 5);
+        const QString path = destination.filePath(QStringLiteral("missing.txt"));
+        auto *job = packet.createPayloadTransferJob(QUrl::fromLocalFile(path));
+        job->setAutoDelete(false);
+        const auto cleanup = qScopeGuard([job] {
+            delete job;
+        });
+        QSignalSpy result(job, &KJob::result);
+        job->start();
+        if (stream) {
+            QMetaObject::invokeMethod(input.data(), "readChannelFinished", Qt::QueuedConnection);
+        }
+        QVERIFY(result.wait());
+        QVERIFY(job->error());
+        QVERIFY(!QFileInfo::exists(path));
+    }
+
+    void testSendFolders()
+    {
+        Device *device = m_daemon->getDevice(KdeConnectConfig::instance().deviceId());
+        QVERIFY(device);
+        if (!device->isPaired()) {
+            device->requestPairing();
+        }
+        QVERIFY(device->supportsPacketType(PACKET_TYPE_SHARE_REQUEST_FOLDER));
+        KdeConnectPlugin *plugin = device->plugin(QStringLiteral("kdeconnect_share"));
+        QVERIFY(plugin);
+        QTemporaryDir source;
+        QTemporaryDir destination;
+        QVERIFY(source.isValid());
+        QVERIFY(destination.isValid());
+        const QString previous =
+            plugin->config()->getString(QStringLiteral("incoming_path"), QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
+        const auto restore = qScopeGuard([plugin, previous] {
+            plugin->config()->set(QStringLiteral("incoming_path"), previous);
+        });
+        plugin->config()->set(QStringLiteral("incoming_path"), destination.path());
+
+        const QMap<QString, QByteArray> files = {
+            {QStringLiteral("folderA/sub/file.txt"), QByteArray("first folder")},
+            {QStringLiteral("folderA/sub/empty.txt"), QByteArray()},
+            {QStringLiteral("folderA/.hidden"), QByteArray("hidden file")},
+            {QStringLiteral("folderB/sub/file.txt"), QByteArray("second folder")},
+            {QStringLiteral("loose.txt"), QByteArray("loose file")},
+        };
+        for (auto it = files.cbegin(); it != files.cend(); ++it) {
+            const QString path = source.filePath(it.key());
+            QVERIFY(QDir().mkpath(QFileInfo(path).absolutePath()));
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write(it.value()), it.value().size());
+        }
+        QVERIFY(QDir().mkpath(source.filePath(QStringLiteral("folderA/emptyDir"))));
+        QVERIFY(QDir().mkpath(source.filePath(QStringLiteral("emptyFolder"))));
+        QStringList urls;
+        for (const QString &name : {QStringLiteral("folderA"), QStringLiteral("folderB"), QStringLiteral("emptyFolder"), QStringLiteral("loose.txt")}) {
+            urls.append(QUrl::fromLocalFile(source.filePath(name)).toString());
+        }
+        QSignalSpy received(plugin, SIGNAL(shareReceived(QString)));
+        QVERIFY(plugin->metaObject()->invokeMethod(plugin, "shareUrls", Q_ARG(QStringList, urls)));
+        QTRY_COMPARE_WITH_TIMEOUT(received.count(), files.size() + 3, 10000);
+        for (auto it = files.cbegin(); it != files.cend(); ++it) {
+            QFile file(destination.filePath(it.key()));
+            QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.fileName()));
+            QCOMPARE(file.readAll(), it.value());
+        }
+        QVERIFY(QFileInfo(destination.filePath(QStringLiteral("folderA/emptyDir"))).isDir());
+        QVERIFY(QFileInfo(destination.filePath(QStringLiteral("emptyFolder"))).isDir());
+
+        received.clear();
+        QVERIFY(plugin->metaObject()->invokeMethod(plugin, "shareUrl", Q_ARG(QString, urls.first())));
+        QTRY_COMPARE_WITH_TIMEOUT(received.count(), 4, 10000);
+        const QUrl rootUrl(received.last().first().toString());
+        QVERIFY(rootUrl.toLocalFile() != destination.filePath(QStringLiteral("folderA")));
+        QFile duplicate(QDir(rootUrl.toLocalFile()).filePath(QStringLiteral("sub/file.txt")));
+        QVERIFY(duplicate.open(QIODevice::ReadOnly));
+        QCOMPARE(duplicate.readAll(), QByteArray("first folder"));
+    }
+
+    void testLegacyPeer()
+    {
+        DeviceInfo info = KdeConnectConfig::instance().deviceInfo();
+        info.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        info.incomingCapabilities.remove(PACKET_TYPE_SHARE_REQUEST_FOLDER);
+        TestDevice peer(this, info.id);
+        peer.updateDeviceInfo(info);
+        KdeConnectPlugin *plugin = PluginLoader::instance()->instantiatePluginForDevice(QStringLiteral("kdeconnect_share"), &peer);
+        QVERIFY(plugin);
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        QTest::ignoreMessage(QtWarningMsg, QRegularExpression(QStringLiteral(".*does not support folder transfers.*")));
+        QVERIFY(plugin->metaObject()->invokeMethod(plugin, "shareUrl", Q_ARG(QString, QUrl::fromLocalFile(folder.path()).toString())));
+        QCOMPARE(peer.getSentPackets(), 0);
+
+        QTemporaryFile file;
+        QVERIFY(file.open());
+        QCOMPARE(file.write("contents"), 8);
+        file.close();
+        QVERIFY(plugin->metaObject()->invokeMethod(plugin, "shareUrl", Q_ARG(QString, QUrl::fromLocalFile(file.fileName()).toString())));
+        QTRY_COMPARE(peer.getSentPackets(), 1);
+        QCOMPARE(peer.getLastPacket()->type(), QString(PACKET_TYPE_SHARE_REQUEST));
+        QCOMPARE(peer.getLastPacket()->payloadSize(), 8);
+        QCOMPARE(peer.getLastPacket()->get<QString>(QStringLiteral("sha256")),
+                 QString::fromLatin1(QCryptographicHash::hash("contents", QCryptographicHash::Sha256).toHex()));
+    }
+
+    void testUnsafeFolderPath_data()
+    {
+        QTest::addColumn<QString>("relative");
+        QTest::newRow("parent") << QStringLiteral("../outside.txt");
+        QTest::newRow("absolute") << QStringLiteral("/outside.txt");
+        QTest::newRow("drive") << QStringLiteral("C:/outside.txt");
+        QTest::newRow("backslash") << QStringLiteral("sub\\outside.txt");
+        QTest::newRow("alternate-stream") << QStringLiteral("file:stream");
+        QTest::newRow("reserved") << QStringLiteral("NUL.txt");
+    }
+
+    void testFolderOverTls()
+    {
+        Device *receiver = m_daemon->getDevice(KdeConnectConfig::instance().deviceId());
+        QVERIFY(receiver);
+        if (!receiver->isPaired()) {
+            receiver->requestPairing();
+        }
+        KdeConnectPlugin *plugin = receiver->plugin(QStringLiteral("kdeconnect_share"));
+        QVERIFY(plugin);
+        QTemporaryDir destination;
+        QVERIFY(destination.isValid());
+        const QString previous =
+            plugin->config()->getString(QStringLiteral("incoming_path"), QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
+        const auto restore = qScopeGuard([plugin, previous] {
+            plugin->config()->set(QStringLiteral("incoming_path"), previous);
+        });
+        plugin->config()->set(QStringLiteral("incoming_path"), destination.path());
+        TestDevice sender(this, receiver->id());
+        const auto connection = connect(&sender, &TestDevice::packetSent, this, [this, plugin, receiver](const NetworkPacket &header) {
+            if (header.type() != PACKET_TYPE_SHARE_REQUEST_FOLDER) {
+                return;
+            }
+            NetworkPacket packet = header;
+            if (packet.hasPayload()) {
+                auto socket = QSharedPointer<QSslSocket>::create();
+                LanLinkProvider::configureSslSocket(socket.data(), receiver->id(), true);
+                connect(socket.data(), &QAbstractSocket::disconnected, socket.data(), &QAbstractSocket::readChannelFinished);
+                socket->connectToHostEncrypted(QStringLiteral("127.0.0.1"), header.payloadTransferInfo().value(QStringLiteral("port")).toUInt());
+                packet.setPayload(socket, packet.payloadSize());
+            }
+            plugin->receivePacket(packet);
+        });
+        const auto disconnectSender = qScopeGuard([connection] {
+            QObject::disconnect(connection);
+        });
+        auto *upload = new CompositeUploadJob(&sender, false);
+        upload->setAutoDelete(false);
+        const auto cleanup = qScopeGuard([upload] {
+            delete upload;
+        });
+        const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QStringList paths = {QString(), QStringLiteral("sub"), QStringLiteral("sub/data.bin"), QStringLiteral("sub/zero.txt"), QStringLiteral("empty")};
+        const QByteArray content(512 * 1024, 'x');
+        QTemporaryFile source;
+        QVERIFY(source.open());
+        QCOMPARE(source.write(content), content.size());
+        source.close();
+        for (int index = 0; index < paths.size(); ++index) {
+            const bool directory = index == 0 || index == 1 || index == 4;
+            NetworkPacket packet(PACKET_TYPE_SHARE_REQUEST_FOLDER);
+            packet.set(QStringLiteral("folderId"), id);
+            packet.set(QStringLiteral("folderName"), QStringLiteral("folder"));
+            packet.set(QStringLiteral("relativePath"), paths.at(index));
+            packet.set(QStringLiteral("filename"), paths.at(index).section(QLatin1Char('/'), -1));
+            packet.set(QStringLiteral("directory"), directory);
+            packet.set(QStringLiteral("entryIndex"), index);
+            packet.set(QStringLiteral("entryCount"), paths.size());
+            if (index == 2) {
+                packet.setPayload(QSharedPointer<QFile>::create(source.fileName()), content.size());
+            } else {
+                packet.setPayload(QSharedPointer<QBuffer>::create(), 0);
+            }
+            if (!directory) {
+                packet.set(QStringLiteral("sha256"),
+                           QString::fromLatin1(QCryptographicHash::hash(index == 2 ? content : QByteArray(), QCryptographicHash::Sha256).toHex()));
+            }
+            upload->addSubjob(new UploadJob(packet));
+        }
+        QSignalSpy received(plugin, SIGNAL(shareReceived(QString)));
+        QSignalSpy sent(upload, &KJob::result);
+        upload->start();
+        QTRY_COMPARE_WITH_TIMEOUT(received.count(), 3, 10000);
+        QTRY_COMPARE(sent.count(), 1);
+        QCOMPARE(upload->error(), 0);
+        QFile file(destination.filePath(QStringLiteral("folder/sub/data.bin")));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), content);
+        QVERIFY(QFileInfo(destination.filePath(QStringLiteral("folder/sub/zero.txt"))).isFile());
+        QVERIFY(QFileInfo(destination.filePath(QStringLiteral("folder/empty"))).isDir());
+    }
+
+    void testFolderSymlinkDestination()
+    {
+#ifdef Q_OS_UNIX
+        QTemporaryDir root;
+        QTemporaryDir outside;
+        QVERIFY(root.isValid());
+        QVERIFY(outside.isValid());
+        QVERIFY(QFile::link(outside.path(), root.filePath(QStringLiteral("link"))));
+        NetworkPacket packet(PACKET_TYPE_SHARE_REQUEST_FOLDER);
+        auto *job = packet.createPayloadTransferJob(QUrl::fromLocalFile(root.filePath(QStringLiteral("link/outside.txt"))));
+        job->setDirectoryTransfer(root.path(), false);
+        job->setAutoDelete(false);
+        const auto cleanup = qScopeGuard([job] {
+            delete job;
+        });
+        QSignalSpy result(job, &KJob::result);
+        job->start();
+        QVERIFY(result.wait());
+        QVERIFY(job->error());
+        QVERIFY(!QFileInfo::exists(outside.filePath(QStringLiteral("outside.txt"))));
+#else
+        QSKIP("This test requires Unix symbolic links");
+#endif
+    }
+
+    void testUnsafeFolderPath()
+    {
+        QFETCH(QString, relative);
+        Device *device = m_daemon->getDevice(KdeConnectConfig::instance().deviceId());
+        QVERIFY(device);
+        if (!device->isPaired()) {
+            device->requestPairing();
+        }
+        KdeConnectPlugin *plugin = device->plugin(QStringLiteral("kdeconnect_share"));
+        QVERIFY(plugin);
+        QTemporaryDir destination;
+        const QString previous =
+            plugin->config()->getString(QStringLiteral("incoming_path"), QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
+        const auto restore = qScopeGuard([plugin, previous] {
+            plugin->config()->set(QStringLiteral("incoming_path"), previous);
+        });
+        plugin->config()->set(QStringLiteral("incoming_path"), destination.path());
+        NetworkPacket packet(PACKET_TYPE_SHARE_REQUEST_FOLDER);
+        packet.set(QStringLiteral("folderId"), QUuid::createUuid().toString(QUuid::WithoutBraces));
+        packet.set(QStringLiteral("folderName"), QStringLiteral("root"));
+        packet.set(QStringLiteral("directory"), true);
+        packet.set(QStringLiteral("entryIndex"), 0);
+        packet.set(QStringLiteral("entryCount"), 2);
+        plugin->receivePacket(packet);
+        packet.set(QStringLiteral("relativePath"), relative);
+        packet.set(QStringLiteral("directory"), false);
+        packet.set(QStringLiteral("entryIndex"), 1);
+        packet.set(QStringLiteral("sha256"), QString::fromLatin1(QCryptographicHash::hash({}, QCryptographicHash::Sha256).toHex()));
+        plugin->receivePacket(packet);
+        QCoreApplication::processEvents();
+        QCOMPARE(QDir(destination.filePath(QStringLiteral("root"))).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).size(), 0);
+    }
+
     void testSend()
     {
         if (!(m_daemon->getLinkProviders().size() > 0)) {

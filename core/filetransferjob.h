@@ -11,6 +11,7 @@
 #include <KJob>
 
 #include <QElapsedTimer>
+#include <QFutureWatcher>
 #include <QIODevice>
 #include <QNetworkReply>
 #include <QSharedPointer>
@@ -49,6 +50,11 @@ public:
     {
         m_autoRename = autoRename;
     }
+    void setDirectoryTransfer(const QString &root, bool directory)
+    {
+        m_destinationRoot = root;
+        m_directory = directory;
+    }
     const NetworkPacket *networkPacket()
     {
         return m_np;
@@ -64,6 +70,9 @@ private:
     void startTransfer();
     void transferFinished();
     void deleteDestinationFile();
+    void verifyChecksum();
+    void sourceFinished();
+    bool isSafeDestination() const;
 
     QSharedPointer<QIODevice> m_origin;
     QNetworkReply *m_reply;
@@ -74,6 +83,10 @@ private:
     qint64 m_size;
     const NetworkPacket *m_np;
     bool m_autoRename;
+    QString m_destinationRoot;
+    bool m_directory = false;
+    QByteArray m_expectedChecksum;
+    QFutureWatcher<QByteArray> m_checksumWatcher;
 };
 
 #endif

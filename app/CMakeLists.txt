@@ -46,6 +46,7 @@ ecm_target_qml_sources(kdeconnect-app SOURCES
     qml/PluginSettings.qml
     qml/Settings.qml
     qml/CustomDevices.qml
+    qml/ShareFiles.qml
     qml/WelcomePage.qml
     qml/NotificationPanel.qml
 )
