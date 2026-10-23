@@ -7,7 +7,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
     build-essential ca-certificates ccache clang-format cmake curl \
-    dbus-x11 extra-cmake-modules gdb gettext git \
+    dbus-x11 extra-cmake-modules gdb gettext git g++-mingw-w64-x86-64-posix \
     kirigami-addons-dev kio6 kpeople-vcard \
     libdbus-1-dev libevdev-dev libfakekey-dev \
     libkf6colorscheme-dev libkf6configwidgets-dev libkf6crash-dev \

@@ -53,6 +53,8 @@ public:
 
     void deviceDiscovered(const QHostAddress &address, int port, const QString &deviceId, int protocolVersion);
 
+    void discoverAddresses(const QList<QHostAddress> &addresses);
+
     static void configureSslSocket(QSslSocket *socket, const QString &deviceId, bool isDeviceTrusted);
     static void configureSocket(QSslSocket *socket);
 

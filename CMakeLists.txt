@@ -166,7 +166,7 @@ if(NOT WIN32 AND NOT APPLE)
     add_subdirectory(plasmoid)
 endif()
 
-ki18n_install(po)
+# This fork uses English source strings without translation catalogs.
 
 if(BUILD_TESTING)
     add_compile_definitions(BUILD_TESTING)

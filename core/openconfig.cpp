@@ -9,6 +9,7 @@
 
 #include <QCoreApplication>
 #include <QDebug>
+#include <QVariant>
 
 #include <KIO/CommandLauncherJob>
 
@@ -19,6 +20,10 @@ void OpenConfig::setXdgActivationToken(const QString &token)
 
 void OpenConfig::openConfiguration(const QString &deviceId, const QString &pluginId)
 {
+    if (QCoreApplication::instance()->property("kdeconnectBackground").toBool()) {
+        qInfo() << "App launch suppressed in background mode";
+        return;
+    }
     QStringList args;
 
     QString argument;

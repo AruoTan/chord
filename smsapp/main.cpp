@@ -25,6 +25,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QIcon>
+#include <QLocale>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
@@ -77,7 +78,10 @@ private:
 
 int main(int argc, char *argv[])
 {
+    qputenv("LANGUAGE", "en_US");
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
     QApplication app(argc, argv);
+    KLocalizedString::setLanguages({QStringLiteral("en_US")});
     KLocalizedString::setApplicationDomain("kdeconnect-sms");
     app.setWindowIcon(QIcon::fromTheme(QStringLiteral("kdeconnect")));
     KAboutData aboutData(QStringLiteral("kdeconnect.sms"),

@@ -9,10 +9,13 @@
 #include <QDBusMessage>
 #include <QFile>
 #include <QIODevice>
+#include <QLocale>
 #include <QTextStream>
+#include <QThread>
 
 #include <KAboutData>
 #include <KCrash>
+#include <KLocalizedString>
 
 #include "dbusinterfaces/dbushelpers.h"
 #include "dbusinterfaces/dbusinterfaces.h"
@@ -21,6 +24,27 @@
 #include "models/devicesmodel.h"
 
 #include <dbushelper.h>
+
+#ifdef Q_OS_WIN
+#include "core/windowsservice.h"
+
+#include <QDBusConnectionInterface>
+
+#include <cstdlib>
+
+static void stopDBusThread()
+{
+    auto *busInterface = QDBusConnection::sessionBus().interface();
+    if (!busInterface) {
+        return;
+    }
+    QThread *thread = busInterface->thread();
+    if (thread && thread != QThread::currentThread()) {
+        thread->quit();
+        thread->wait();
+    }
+}
+#endif
 
 QString getDevice(DaemonDbusInterface &iface, const QCommandLineParser &parser)
 {
@@ -50,7 +74,10 @@ QString getDevice(DaemonDbusInterface &iface, const QCommandLineParser &parser)
 
 int main(int argc, char **argv)
 {
+    qputenv("LANGUAGE", "en_US");
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
     QCoreApplication app(argc, argv);
+    KLocalizedString::setLanguages({QStringLiteral("en_US")});
     KAboutData aboutData(QStringLiteral("kdeconnect-cli"),
                          QStringLiteral("kdeconnect-cli"),
                          QStringLiteral(KDECONNECT_VERSION_STRING),
@@ -64,6 +91,11 @@ int main(int argc, char **argv)
     KCrash::initialize();
 
     QCommandLineParser parser;
+#ifdef Q_OS_WIN
+    parser.addOption(
+        QCommandLineOption(QStringLiteral("service-register"), i18n("Register and start the Windows background service (administrator required)")));
+    parser.addOption(QCommandLineOption(QStringLiteral("service-unregister"), i18n("Stop and remove the Windows background service (administrator required)")));
+#endif
     parser.addOption(QCommandLineOption(QStringList{QStringLiteral("l"), QStringLiteral("list-devices")}, i18n("List all devices")));
     parser.addOption(
         QCommandLineOption(QStringList{QStringLiteral("a"), QStringLiteral("list-available")}, i18n("List available (paired and reachable) devices")));
@@ -115,7 +147,27 @@ int main(int argc, char **argv)
     parser.process(app);
     aboutData.processCommandLine(&parser);
 
+#ifdef Q_OS_WIN
+    const bool registerService = parser.isSet(QStringLiteral("service-register"));
+    const bool unregisterService = parser.isSet(QStringLiteral("service-unregister"));
+    if (registerService || unregisterService) {
+        if (parser.optionNames().size() != 1 || !parser.positionalArguments().isEmpty()) {
+            QTextStream(stderr) << "Service registration options must be used alone" << Qt::endl;
+            return 1;
+        }
+        return WindowsService::configure(registerService);
+    }
+#endif
+
     DaemonDbusInterface iface;
+#ifdef Q_OS_WIN
+    // Run before DLL teardown, including errors that call exit() in blockOnReply.
+    if (std::atexit(stopDBusThread) != 0) {
+        stopDBusThread();
+        QTextStream(stderr) << "Cannot register D-Bus thread cleanup" << Qt::endl;
+        return 1;
+    }
+#endif
 
     if (parser.isSet(QStringLiteral("my-id"))) {
         QTextStream(stdout) << iface.selfId() << Qt::endl;
@@ -278,7 +330,7 @@ int main(int argc, char **argv)
         if (!dev.isReachable()) {
             // Device doesn't exist, go into discovery mode and wait up to 30 seconds for the device to appear
             QEventLoop wait;
-            QTextStream(stderr) << i18n("waiting for device…") << Qt::endl;
+            QTextStream(stderr) << i18n("waiting for device...") << Qt::endl;
 
             QObject::connect(&iface, &DaemonDbusInterface::deviceAdded, &iface, [&](const QString &deviceAddedId) {
                 if (device == deviceAddedId) {

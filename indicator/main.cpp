@@ -6,6 +6,7 @@
 
 #include <QApplication>
 #include <QIcon>
+#include <QLocale>
 #include <QPointer>
 #include <QProcess>
 #include <QQuickStyle>
@@ -41,6 +42,8 @@
 
 int main(int argc, char **argv)
 {
+    qputenv("LANGUAGE", "en_US");
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
 #ifdef Q_OS_WIN
     // If ran from a console, redirect the output there
     if (AttachConsole(ATTACH_PARENT_PROCESS)) {
@@ -54,6 +57,7 @@ int main(int argc, char **argv)
     KIconTheme::initTheme();
 #endif
     QApplication app(argc, argv);
+    KLocalizedString::setLanguages({QStringLiteral("en_US")});
 
     IndicatorHelper helper;
     helper.startDaemon();

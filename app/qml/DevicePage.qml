@@ -55,14 +55,6 @@ Kirigami.ScrollablePage {
             visible: root.currentDevice && root.currentDevice.isPaired
         },
         Kirigami.Action {
-            icon.name: "hands-free"
-            text: i18nd("kdeconnect-app", "Send Ping")
-            visible: root.currentDevice && root.currentDevice.isPaired && root.currentDevice.isReachable
-            onTriggered: {
-                root.currentDevice.pluginCall("ping", "sendPing");
-            }
-        },
-        Kirigami.Action {
             icon.name: "settings-configure"
             text: i18n("Plugin Settings")
             visible: root.currentDevice && root.currentDevice.isPaired && root.currentDevice.isReachable

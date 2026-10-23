@@ -1,6 +1,6 @@
 add_definitions(-DTRANSLATION_DOMAIN="kdeconnect-kded")
 
-add_executable(kdeconnectd kdeconnectd.cpp desktop_daemon.cpp ${CMAKE_SOURCE_DIR}/icons/custom_icons.qrc)
+add_executable(kdeconnectd kdeconnectd.cpp desktop_daemon.cpp backgroundmonitor.cpp ${CMAKE_SOURCE_DIR}/icons/custom_icons.qrc)
 ecm_qt_declare_logging_category(kdeconnectd
     HEADER kdeconnectd_debug.h
     IDENTIFIER KDECONNECT_DAEMON CATEGORY_NAME kdeconnect.daemon
@@ -31,4 +31,8 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/org.kde.kdeconnect.daemon.desktop DEST
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/org.kde.kdeconnect.daemon.desktop DESTINATION ${KDE_INSTALL_APPDIR})
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/org.kde.kdeconnect.service DESTINATION ${KDE_INSTALL_DBUSSERVICEDIR})
 install(TARGETS kdeconnectd ${KDECONNECT_INSTALL_TARGETS_DEFAULT_ARGS})
+
+if(WIN32)
+    add_subdirectory(windowsservice)
+endif()
 

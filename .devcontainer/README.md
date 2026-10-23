@@ -29,6 +29,20 @@ Interactive GUI testing requires forwarding a desktop display separately;
 network discovery and Bluetooth also depend on container access to the host's
 network and hardware. The configuration does not expose host devices or ports.
 
+MinGW is also installed to compile-check the standalone Windows service host;
+this does not cross-compile the Qt/KDE application:
+
+```sh
+cmake -S daemon/windowsservice -B build-service-cross -G Ninja \
+    -DCMAKE_SYSTEM_NAME=Windows \
+    -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++
+cmake --build build-service-cross --parallel 2
+```
+
+Service registration and recovery require Windows to test. See the
+[Windows service instructions](../daemon/windowsservice/README.md) for usage,
+session behavior, diagnostics, and updating Scoop installations.
+
 ## Windows packages
 
 Add these files to your own GitHub repository. The `Windows packages` workflow
@@ -37,6 +51,13 @@ can be started from the Actions tab, and also runs for pushed tags matching
 with the current upstream Craft tool and dependency blueprints; it does not
 build an unrelated upstream KDE Connect release. No signing credentials are
 required.
+
+Application messages use English regardless of the system language. Project
+translation catalogs are not built or installed. The `.craftignore` file also
+excludes non-English Qt and KDE dependency catalogs from both Windows packages;
+English dependency catalogs used for plural forms are retained. The archive
+check rejects non-English catalogs. Device names and received content still use
+the text supplied by the peer.
 
 Windows packages enable `KDECONNECT_BUILD_REDUCED_PLUGIN_SET`. The following
 plugins are neither built nor installed:
@@ -115,8 +136,11 @@ Download the `kdeconnect-windows-x64-<commit>` artifact after a successful run:
 - `SHA256SUMS`: SHA256 checksums for both packages.
 
 The job extracts the archive and runs its CLI with Craft removed from PATH.
-This is a packaging smoke test; GUI startup, pairing, firewall access and
-installation should still be checked on a separate Windows machine.
+It checks help/version and D-Bus shutdown with an intentionally invalid bus
+address, covering normal completion, missing-device returns and D-Bus error
+exits. Event-dispatcher window warnings fail the check. This is a packaging
+smoke test; GUI startup, pairing, firewall access and installation should still
+be checked on a separate Windows machine.
 
 For Scoop, optionally set `scoop_base_url` when starting the workflow to the
 HTTPS directory where you will host the generated `.7z`. The artifact will
