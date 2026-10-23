@@ -5,11 +5,14 @@
  */
 
 #include <QCoreApplication>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QObject>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTcpSocket>
 #include <QTest>
+#include <QUdpSocket>
 
 #include "core/backends/lan/lanlinkprovider.h"
 
@@ -23,6 +26,28 @@ public:
     }
 
 private Q_SLOTS:
+    void testTargetedDiscovery()
+    {
+        const QHostAddress target(QStringLiteral("127.0.0.2"));
+        QUdpSocket receiver;
+        QVERIFY(receiver.bind(target, LanLinkProvider::UDP_PORT));
+        LanLinkProvider provider(true);
+        provider.onStart();
+        provider.discoverAddresses({target});
+        QTRY_VERIFY(receiver.hasPendingDatagrams());
+        QByteArray packet(receiver.pendingDatagramSize(), '\0');
+        QVERIFY(receiver.readDatagram(packet.data(), packet.size()) > 0);
+        QCOMPARE(QJsonDocument::fromJson(packet).object().value(QStringLiteral("type")).toString(), QStringLiteral("kdeconnect.identity"));
+
+        provider.disable();
+        while (receiver.hasPendingDatagrams()) {
+            receiver.readDatagram(packet.data(), packet.size());
+        }
+        provider.discoverAddresses({target});
+        QTest::qWait(50);
+        QVERIFY(!receiver.hasPendingDatagrams());
+    }
+
     void testRateLimitTcpByIp()
     {
         LanLinkProvider provider(true);

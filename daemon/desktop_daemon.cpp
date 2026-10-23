@@ -10,6 +10,7 @@
 #include <QIcon>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QVariant>
 
 #include <KDBusService>
 #include <KIO/Global>
@@ -29,6 +30,11 @@ DesktopDaemon::DesktopDaemon(QObject *parent)
 
 void DesktopDaemon::askPairingConfirmation(Device *device)
 {
+    if (qApp->property("kdeconnectBackground").toBool()) {
+        qInfo() << "Pairing request from" << device->name() << device->id() << "key:" << device->verificationKey()
+                << "- use kdeconnect-cli --device <id> --pair to accept";
+        return;
+    }
     KNotification *notification = new KNotification(QStringLiteral("pairingRequest"), KNotification::NotificationFlag::Persistent);
     QTimer::singleShot(PairingHandler::pairingTimeoutMsec, notification, &KNotification::close);
     notification->setIconName(QStringLiteral("dialog-information"));

@@ -206,6 +206,32 @@ void LanLinkProvider::broadcastUdpDiscoveryPacket()
     sendUdpDiscoveryPacket(getBroadcastAddresses());
 }
 
+void LanLinkProvider::discoverAddresses(const QList<QHostAddress> &addresses)
+{
+    if (m_disabled || !m_server->isListening() || qEnvironmentVariableIsSet("KDECONNECT_DISABLE_UDP_BROADCAST")) {
+        return;
+    }
+    QList<QHostAddress> ipv4;
+    QList<QHostAddress> ipv6;
+    for (const auto &address : addresses) {
+        (address.protocol() == QAbstractSocket::IPv6Protocol ? ipv6 : ipv4).append(address);
+    }
+    if (!ipv4.isEmpty()) {
+        QUdpSocket socket;
+        socket.setProxy(QNetworkProxy::NoProxy);
+        if (socket.bind(QHostAddress::AnyIPv4)) {
+            sendUdpDiscoveryPacket(socket, ipv4);
+        }
+    }
+    if (!ipv6.isEmpty()) {
+        QUdpSocket socket;
+        socket.setProxy(QNetworkProxy::NoProxy);
+        if (socket.bind(QHostAddress::AnyIPv6)) {
+            sendUdpDiscoveryPacket(socket, ipv6);
+        }
+    }
+}
+
 QList<QHostAddress> LanLinkProvider::getBroadcastAddresses()
 {
     const QStringList customDevices = KdeConnectConfig::instance().customDevices();

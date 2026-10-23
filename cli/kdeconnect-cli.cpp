@@ -22,6 +22,10 @@
 
 #include <dbushelper.h>
 
+#ifdef Q_OS_WIN
+#include "core/windowsservice.h"
+#endif
+
 QString getDevice(DaemonDbusInterface &iface, const QCommandLineParser &parser)
 {
     QString device = parser.value(QStringLiteral("device"));
@@ -64,6 +68,11 @@ int main(int argc, char **argv)
     KCrash::initialize();
 
     QCommandLineParser parser;
+#ifdef Q_OS_WIN
+    parser.addOption(
+        QCommandLineOption(QStringLiteral("service-register"), i18n("Register and start the Windows background service (administrator required)")));
+    parser.addOption(QCommandLineOption(QStringLiteral("service-unregister"), i18n("Stop and remove the Windows background service (administrator required)")));
+#endif
     parser.addOption(QCommandLineOption(QStringList{QStringLiteral("l"), QStringLiteral("list-devices")}, i18n("List all devices")));
     parser.addOption(
         QCommandLineOption(QStringList{QStringLiteral("a"), QStringLiteral("list-available")}, i18n("List available (paired and reachable) devices")));
@@ -114,6 +123,18 @@ int main(int argc, char **argv)
 
     parser.process(app);
     aboutData.processCommandLine(&parser);
+
+#ifdef Q_OS_WIN
+    const bool registerService = parser.isSet(QStringLiteral("service-register"));
+    const bool unregisterService = parser.isSet(QStringLiteral("service-unregister"));
+    if (registerService || unregisterService) {
+        if (parser.optionNames().size() != 1 || !parser.positionalArguments().isEmpty()) {
+            QTextStream(stderr) << "Service registration options must be used alone" << Qt::endl;
+            return 1;
+        }
+        return WindowsService::configure(registerService);
+    }
+#endif
 
     DaemonDbusInterface iface;
 

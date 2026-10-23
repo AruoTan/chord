@@ -41,6 +41,8 @@ if (-not $SkipDependencies) {
     if ($LASTEXITCODE) { throw 'Failed to install build and runtime dependencies' }
 }
 if ($DependenciesOnly) { return }
+python "$PSScriptRoot/configure-windows-blueprint.py"
+if ($LASTEXITCODE) { throw 'Failed to configure native service packaging in the Craft blueprint' }
 Write-Host "[$(Get-Date -Format o)] Building the checked-out sources"
 # Explicit stages and no binary cache ensure this checkout is compiled.
 craft @options --no-cache --unpack --compile --install --qmerge kdeconnect-kde
@@ -77,7 +79,7 @@ try {
     & 7z x "$output/$portableName" "-o$probe" -y
     if ($LASTEXITCODE) { throw 'Portable archive cannot be extracted' }
     Write-Host "[$(Get-Date -Format o)] Checking portable executables and plugins"
-    foreach ($executable in 'kdeconnect-app.exe', 'kdeconnect-indicator.exe', 'kdeconnectd.exe', 'kdeconnect-cli.exe', 'dbus-daemon.exe') {
+    foreach ($executable in 'kdeconnect-app.exe', 'kdeconnect-indicator.exe', 'kdeconnectd.exe', 'kdeconnect-cli.exe', 'kdeconnect-service.exe', 'dbus-daemon.exe') {
         if (-not (Test-Path "$probe/bin/$executable")) {
             throw "Portable archive is missing $executable"
         }
@@ -103,25 +105,33 @@ try {
             [Environment]::SetEnvironmentVariable($name, $null)
         }
         $env:PATH = "$probe/bin;$env:SystemRoot/System32;$env:SystemRoot"
-        Write-Host "[$(Get-Date -Format o)] Checking portable CLI startup (30-second timeout)"
-        $probeStdout = Join-Path $env:TEMP 'kdeconnect-portable-probe.stdout.log'
-        $probeStderr = Join-Path $env:TEMP 'kdeconnect-portable-probe.stderr.log'
-        $probeProcess = Start-Process -FilePath "$probe/bin/kdeconnect-cli.exe" -ArgumentList '--version' `
-            -NoNewWindow -PassThru -RedirectStandardOutput $probeStdout -RedirectStandardError $probeStderr
-        try {
-            if (-not $probeProcess.WaitForExit(30000)) {
-                $probeProcess.Kill($true)
-                $null = $probeProcess.WaitForExit(5000)
-                throw 'Portable CLI startup timed out after 30 seconds; see kdeconnect-portable-probe logs'
+        foreach ($check in 'version', 'help') {
+            Write-Host "[$(Get-Date -Format o)] Checking portable CLI --$check (30-second timeout)"
+            $probeStdout = Join-Path $env:TEMP "kdeconnect-portable-probe.$check.stdout.log"
+            $probeStderr = Join-Path $env:TEMP "kdeconnect-portable-probe.$check.stderr.log"
+            $probeProcess = Start-Process -FilePath "$probe/bin/kdeconnect-cli.exe" -ArgumentList "--$check" `
+                -NoNewWindow -PassThru -RedirectStandardOutput $probeStdout -RedirectStandardError $probeStderr
+            try {
+                if (-not $probeProcess.WaitForExit(30000)) {
+                    $probeProcess.Kill($true)
+                    $null = $probeProcess.WaitForExit(5000)
+                    throw 'Portable CLI startup timed out after 30 seconds; see kdeconnect-portable-probe logs'
+                }
+                if ($probeProcess.ExitCode -ne 0) {
+                    throw "Portable CLI failed to start outside Craft (exit code $($probeProcess.ExitCode))"
+                }
+                if ($check -eq 'help') {
+                    $helpText = Get-Content $probeStdout -Raw
+                    foreach ($option in '--service-register', '--service-unregister') {
+                        if (-not $helpText.Contains($option)) { throw "Portable CLI is missing $option" }
+                    }
+                }
+            } finally {
+                foreach ($log in $probeStdout, $probeStderr) {
+                    if (Test-Path $log) { Get-Content $log | Write-Host }
+                }
+                $probeProcess.Dispose()
             }
-            if ($probeProcess.ExitCode -ne 0) {
-                throw "Portable CLI failed to start outside Craft (exit code $($probeProcess.ExitCode))"
-            }
-        } finally {
-            foreach ($log in $probeStdout, $probeStderr) {
-                if (Test-Path $log) { Get-Content $log | Write-Host }
-            }
-            $probeProcess.Dispose()
         }
     } finally {
         foreach ($name in $probeVariables) {

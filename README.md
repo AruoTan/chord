@@ -36,6 +36,8 @@ found the repo :), instructions are
 ### On Mac or Windows
 Platforms other than Linux are not officially supported, as there has yet to be an official release of KDE Connect for MacOS or Windows. However, most of the features have already been ported to windows so you can compile KDE Connect for Windows using [Craft](https://community.kde.org/Craft). It hasn't yet been completely tested on MacOS, contributions and feedback are welcome!
 
+For this fork's Windows background service, see the [service instructions](daemon/windowsservice/README.md).
+
 ### On BSD
 It should work, but no promises :)
 

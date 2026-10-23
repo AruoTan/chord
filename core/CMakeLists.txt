@@ -62,6 +62,8 @@ PRIVATE
 )
 
 if(WIN32)
+    target_sources(kdeconnectcore PRIVATE windowsservice.cpp)
+    target_link_libraries(kdeconnectcore PRIVATE advapi32)
     target_link_libraries(kdeconnectcore PRIVATE ws2_32.lib) # winsock2
     target_link_libraries(kdeconnectcore PRIVATE powrprof)
 elseif(APPLE)

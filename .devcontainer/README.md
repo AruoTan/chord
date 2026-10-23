@@ -29,6 +29,20 @@ Interactive GUI testing requires forwarding a desktop display separately;
 network discovery and Bluetooth also depend on container access to the host's
 network and hardware. The configuration does not expose host devices or ports.
 
+MinGW is also installed to compile-check the standalone Windows service host;
+this does not cross-compile the Qt/KDE application:
+
+```sh
+cmake -S daemon/windowsservice -B build-service-cross -G Ninja \
+    -DCMAKE_SYSTEM_NAME=Windows \
+    -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++
+cmake --build build-service-cross --parallel 2
+```
+
+Service registration and recovery require Windows to test. See the
+[Windows service instructions](../daemon/windowsservice/README.md) for usage,
+session behavior, diagnostics, and updating Scoop installations.
+
 ## Windows packages
 
 Add these files to your own GitHub repository. The `Windows packages` workflow

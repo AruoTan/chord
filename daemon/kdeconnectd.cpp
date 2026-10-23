@@ -12,6 +12,7 @@
 #include <QQuickStyle>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QVariant>
 
 #ifdef Q_OS_WIN
 #include <Windows.h>
@@ -25,9 +26,13 @@
 
 #include <dbushelper.h>
 
+#include "backgroundmonitor.h"
 #include "desktop_daemon.h"
 #include "kdeconnect-version.h"
 #include <core/processhelper.h>
+#ifdef Q_OS_WIN
+#include "core/windowsservice.h"
+#endif
 
 // Copied from plasma-workspace/libkworkspace/kworkspace.cpp
 static void detectPlatform(int argc, char **argv)
@@ -105,11 +110,29 @@ int main(int argc, char *argv[])
     QCommandLineParser parser;
     QCommandLineOption replaceOption({QStringLiteral("replace")}, i18n("Replace an existing instance"));
     parser.addOption(replaceOption);
+    QCommandLineOption backgroundOption(QStringLiteral("background"), i18n("Run background monitoring without opening the app or indicator"));
+    parser.addOption(backgroundOption);
+    QCommandLineOption heartbeatOption(QStringLiteral("service-heartbeat"), QString(), QStringLiteral("event"));
+    QCommandLineOption stopOption(QStringLiteral("service-stop"), QString(), QStringLiteral("event"));
+    heartbeatOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    stopOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    parser.addOption(heartbeatOption);
+    parser.addOption(stopOption);
     aboutData.setupCommandLine(&parser);
 
     parser.process(app);
 
     aboutData.processCommandLine(&parser);
+
+    bool background = parser.isSet(backgroundOption);
+#ifdef Q_OS_WIN
+    background = background || WindowsService::registeredForCurrentUser();
+#endif
+    if (parser.isSet(heartbeatOption) != parser.isSet(stopOption) || (parser.isSet(heartbeatOption) && !background)) {
+        qCritical() << "Service supervision requires background mode and both event names";
+        return 1;
+    }
+    app.setProperty("kdeconnectBackground", background);
 
     KDBusService::StartupOptions flags = KDBusService::Unique;
     if (parser.isSet(replaceOption)) {
@@ -119,9 +142,18 @@ int main(int argc, char *argv[])
 
     DesktopDaemon daemon;
 
+    if (background) {
+        auto *monitor = new BackgroundMonitor(&daemon);
+        if (parser.isSet(heartbeatOption) && !monitor->supervise(parser.value(heartbeatOption), parser.value(stopOption))) {
+            return 1;
+        }
+    }
+
 #ifdef Q_OS_WIN
-    // make sure indicator shows up in the tray whenever daemon is spawned
-    ProcessHelper::startDetached(QStringLiteral("kdeconnect-indicator.exe"));
+    // Show the tray only for an interactive daemon.
+    if (!background) {
+        ProcessHelper::startDetached(QStringLiteral("kdeconnect-indicator.exe"));
+    }
 #endif
 
     return app.exec();
