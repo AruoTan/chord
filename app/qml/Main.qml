@@ -110,6 +110,20 @@ Kirigami.ApplicationWindow {
                     }
 
                     QQC2.ToolButton {
+                        text: i18nc("@action:button", "Custom Devices by IP")
+                        icon.name: "list-add"
+                        display: QQC2.AbstractButton.IconOnly
+
+                        QQC2.ToolTip.text: text
+                        QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                        QQC2.ToolTip.visible: hovered
+
+                        onClicked: pageStack.pushDialogLayer(Qt.resolvedUrl("CustomDevices.qml"), {}, {
+                            title: text
+                        })
+                    }
+
+                    QQC2.ToolButton {
                         text: i18nc("@action:button", "Refresh")
                         icon.name: 'view-refresh-symbolic'
                         display: QQC2.AbstractButton.IconOnly

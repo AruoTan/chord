@@ -20,6 +20,7 @@ endif()
 
 add_executable(kdeconnect-app
     main.cpp
+    ipaddressvalidator.h
     ${kdeconnect_SRCS}
     ${kdeconnect_custom_icons_SRCS}
 )
@@ -44,6 +45,7 @@ ecm_target_qml_sources(kdeconnect-app SOURCES
     qml/MprisSlider.qml
     qml/PluginSettings.qml
     qml/Settings.qml
+    qml/CustomDevices.qml
     qml/WelcomePage.qml
     qml/NotificationPanel.qml
 )
@@ -51,6 +53,7 @@ ecm_target_qml_sources(kdeconnect-app SOURCES
 target_link_libraries(kdeconnect-app PRIVATE
     Qt::Quick
     Qt::QuickControls2
+    Qt::Network
     Qt::Widgets
     KF6::CoreAddons
     KF6::I18n
