@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: CC0-1.0
 # SPDX-FileCopyrightText: None
+param([switch]$DependenciesOnly, [switch]$SkipDependencies)
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -7,8 +9,7 @@ $source = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $craftRoot = $env:CRAFT_ROOT
 if (-not $craftRoot) { $craftRoot = 'C:\CraftRoot' }
 $env:CRAFT_ROOT = $craftRoot
-. "$PSScriptRoot/initialize-craft-path.ps1"
-. "$craftRoot/craft/craftenv.ps1"
+. "$PSScriptRoot/enter-craft-environment.ps1"
 Set-Location $source
 
 $output = Join-Path $source 'dist'
@@ -17,12 +18,13 @@ $packageOutput = Join-Path $env:TEMP "kdeconnect-packages-$([guid]::NewGuid())"
 New-Item -ItemType Directory $packageOutput | Out-Null
 
 $options = @(
-    '--ci-mode', '--buildtype', 'Release',
+    # Craft resolves runtime images by build type; match the dependency snapshot.
+    '--ci-mode', '--buildtype', 'RelWithDebInfo',
     '--options', 'kdeconnect-kde.version=master',
     '--options', "kdeconnect-kde.srcDir=$source",
     '--options', 'kdeconnect-kde.packageAppx=False',
     '--options', 'kdeconnect-kde.buildTests=False',
-    '--options', 'kdeconnect-kde.args=-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache',
+    '--options', 'kdeconnect-kde.args=-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DKDECONNECT_BUILD_REDUCED_PLUGIN_SET=ON',
     '--options', '[Packager]PackageType=NullsoftInstallerPackager',
     '--options', '[Packager]PackageDebugSymbols=False',
     '--options', '[CodeSigning]Enabled=False',
@@ -32,16 +34,22 @@ $options = @(
 sccache --version
 if ($LASTEXITCODE) { throw 'sccache is required for this packaging build' }
 
-craft --ci-mode nsis
-if ($LASTEXITCODE) { throw 'Failed to install NSIS' }
-craft @options --install-deps kdeconnect-kde
-if ($LASTEXITCODE) { throw 'Failed to install build and runtime dependencies' }
+if (-not $SkipDependencies) {
+    craft --ci-mode --buildtype RelWithDebInfo nsis
+    if ($LASTEXITCODE) { throw 'Failed to install NSIS' }
+    craft @options --install-deps kdeconnect-kde
+    if ($LASTEXITCODE) { throw 'Failed to install build and runtime dependencies' }
+}
+if ($DependenciesOnly) { return }
+Write-Host "[$(Get-Date -Format o)] Building the checked-out sources"
 # Explicit stages and no binary cache ensure this checkout is compiled.
 craft @options --no-cache --unpack --compile --install --qmerge kdeconnect-kde
 if ($LASTEXITCODE) { throw 'Failed to build the checked-out KDE Connect sources' }
+Write-Host "[$(Get-Date -Format o)] Creating the installer and portable archive"
 # NullsoftInstallerPackager also generates a dependency-complete portable .7z.
 craft @options --package kdeconnect-kde
 if ($LASTEXITCODE) { throw 'Failed to package KDE Connect' }
+Write-Host "[$(Get-Date -Format o)] Packaging complete; collecting artifacts"
 
 $installers = @(Get-ChildItem $packageOutput -File -Filter '*.exe')
 $archives = @(Get-ChildItem $packageOutput -File -Filter '*.7z' |
@@ -65,12 +73,25 @@ Copy-Item $archives[0].FullName "$output/$portableName"
 
 $probe = Join-Path $env:TEMP "kdeconnect-probe-$([guid]::NewGuid())"
 try {
-    & 7z x "$output/$portableName" "-o$probe" -y | Out-Null
+    Write-Host "[$(Get-Date -Format o)] Extracting the portable archive for validation"
+    & 7z x "$output/$portableName" "-o$probe" -y
     if ($LASTEXITCODE) { throw 'Portable archive cannot be extracted' }
+    Write-Host "[$(Get-Date -Format o)] Checking portable executables and plugins"
     foreach ($executable in 'kdeconnect-app.exe', 'kdeconnect-indicator.exe', 'kdeconnectd.exe', 'kdeconnect-cli.exe', 'dbus-daemon.exe') {
         if (-not (Test-Path "$probe/bin/$executable")) {
             throw "Portable archive is missing $executable"
         }
+    }
+    $excludedPlugins = @(
+        'findmyphone', 'findthisdevice', 'lockdevice', 'mpriscontrol', 'mprisremote',
+        'pausemusic', 'ping', 'presenter', 'remotecommands', 'remotecontrol',
+        'remotekeyboard', 'remotesystemvolume', 'runcommand', 'screensaver_inhibit',
+        'systemvolume', 'telephony', 'virtualmonitor', 'mousepad', 'contacts', 'digitizer'
+    ) | ForEach-Object { "kdeconnect_$_" }
+    $unexpectedPlugins = @(Get-ChildItem $probe -Recurse -File -Filter 'kdeconnect_*.dll' |
+        Where-Object { $_.BaseName -in $excludedPlugins })
+    if ($unexpectedPlugins.Count) {
+        throw "Portable archive contains excluded plugins: $($unexpectedPlugins.Name -join ', ')"
     }
     # Do not allow DLLs from the build environment to conceal missing dependencies.
     $probeVariables = @('PATH', 'QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH',
@@ -82,18 +103,38 @@ try {
             [Environment]::SetEnvironmentVariable($name, $null)
         }
         $env:PATH = "$probe/bin;$env:SystemRoot/System32;$env:SystemRoot"
-        & "$probe/bin/kdeconnect-cli.exe" --version
-        if ($LASTEXITCODE) { throw 'Portable CLI failed to start outside Craft' }
+        Write-Host "[$(Get-Date -Format o)] Checking portable CLI startup (30-second timeout)"
+        $probeStdout = Join-Path $env:TEMP 'kdeconnect-portable-probe.stdout.log'
+        $probeStderr = Join-Path $env:TEMP 'kdeconnect-portable-probe.stderr.log'
+        $probeProcess = Start-Process -FilePath "$probe/bin/kdeconnect-cli.exe" -ArgumentList '--version' `
+            -NoNewWindow -PassThru -RedirectStandardOutput $probeStdout -RedirectStandardError $probeStderr
+        try {
+            if (-not $probeProcess.WaitForExit(30000)) {
+                $probeProcess.Kill($true)
+                $null = $probeProcess.WaitForExit(5000)
+                throw 'Portable CLI startup timed out after 30 seconds; see kdeconnect-portable-probe logs'
+            }
+            if ($probeProcess.ExitCode -ne 0) {
+                throw "Portable CLI failed to start outside Craft (exit code $($probeProcess.ExitCode))"
+            }
+        } finally {
+            foreach ($log in $probeStdout, $probeStderr) {
+                if (Test-Path $log) { Get-Content $log | Write-Host }
+            }
+            $probeProcess.Dispose()
+        }
     } finally {
         foreach ($name in $probeVariables) {
             [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name])
         }
     }
 } finally {
+    Write-Host "[$(Get-Date -Format o)] Removing temporary package validation files"
     Remove-Item $probe -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $packageOutput -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+Write-Host "[$(Get-Date -Format o)] Writing package checksums"
 Get-ChildItem $output -File | Where-Object { $_.Extension -in '.exe', '.7z' } |
     ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)" } |
     Set-Content "$output/SHA256SUMS" -Encoding utf8NoBOM

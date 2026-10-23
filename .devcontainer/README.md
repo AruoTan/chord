@@ -38,11 +38,59 @@ with the current upstream Craft tool and dependency blueprints; it does not
 build an unrelated upstream KDE Connect release. No signing credentials are
 required.
 
+Windows packages enable `KDECONNECT_BUILD_REDUCED_PLUGIN_SET`. The following
+plugins are neither built nor installed:
+
+| Plugin | Source directory |
+| --- | --- |
+| Find other devices | `findmyphone` |
+| Find this device | `findthisdevice` |
+| Lock Device | `lockdevice` |
+| Multimedia control receiver | `mpriscontrol` |
+| Send multimedia control commands | `mprisremote` |
+| Pause media during calls | `pausemusic` |
+| Ping | `ping` |
+| Presenter | `presenter` |
+| Send commands to execute | `remotecommands` |
+| Send remote mouse input | `remotecontrol` |
+| Send remote keyboard input | `remotekeyboard` |
+| Remote volume control | `remotesystemvolume` |
+| Execute remote commands | `runcommand` |
+| Inhibit screensaver | `screensaver-inhibit` |
+| Receive volume controls | `systemvolume` |
+| Telephony integration | `telephony` |
+| Virtual Monitor | `virtualmonitor` |
+| Receive remote input | `mousepad` |
+| Sync Contacts | `contacts` |
+| Drawing tablet | `digitizer` |
+
+Device discovery and pairing remain available. Plugin sources are retained;
+the default CMake build still includes the full plugin set. To develop the
+reduced build locally, add `-DKDECONNECT_BUILD_REDUCED_PLUGIN_SET=ON` to the
+configure command and use a fresh build and installation directory. Installing
+over a full build does not remove previously installed plugin files. The
+packaging job rejects portable archives containing any excluded plugin DLLs.
+
 The job removes external `make.exe` directories from PATH before Craft setup:
 the runner's native MinGW make cannot process MSYS `/c/...` paths. Craft's own
 MSYS make remains available. Downloads and dependency binary archives are
-cached between runs, including failed runs. Craft installations and their
-short-path directory junctions are rebuilt rather than restored from cache.
+cached between runs, including failed runs. Installed Craft tools, dependency
+images and libraries are cached separately after dependency installation
+succeeds, before compiling the application. A hit skips bootstrap and dependency
+installation. The environment cache is keyed by runner image version, Python
+version and build configuration; changing application source alone reuses it.
+Increase the optional `cache_revision` workflow input to force a fresh snapshot.
+Snapshots omit downloads, logs, package outputs and dependency work trees, while
+retaining the image directories needed for runtime packaging. Work trees are
+excluded during archiving rather than deleted, preserving MSYS read-only files.
+Snapshot preparation and cache upload failures do not block application builds;
+only successfully prepared snapshots are uploaded. Short-path
+junctions are recorded and recreated. Old runner environment snapshots are
+removed and the current Python installation is detected again after restore.
+Environment initialization uses Craft's Python interface rather than its
+interactive PowerShell console script, so it also works without a console
+cursor handle on hosted runners. The snapshot is saved before application
+compilation, allowing it to be reused even if compilation or packaging fails.
 The application uses sccache with GitHub's cache backend and skips compiling
 test targets in the packaging job. The Linux test instructions above still
 build and run the test suite. Cache hits depend on source, compiler and flags;
@@ -50,10 +98,14 @@ the first run still needs to populate the caches.
 
 The desktop job also clears `ANDROID_SDK_ROOT` and `ANDROID_NDK`. The hosted
 Windows runner defines both, and CraftBootstrap would otherwise select
-`MinSizeRel` even with a Windows ABI. Bootstrap must retain `RelWithDebInfo`
-to use KDE's dependency binary cache; the application itself builds in
-`Release`. Failure logs are collected into one directory before uploading,
-because Actions artifacts cannot combine files from different Windows drives.
+`MinSizeRel` even with a Windows ABI. Bootstrap, dependency installation,
+application compilation and packaging all use `RelWithDebInfo` to match KDE's
+dependency binary cache and Craft's runtime image paths. This configuration
+enables optimization; debug symbols are excluded from distributed packages.
+MSVC uses embedded debug information (`/Z7`) so sccache can cache compilation
+without a shared compiler PDB. Failure logs are collected into one directory
+before uploading, because Actions artifacts cannot combine files from different
+Windows drives.
 
 Download the `kdeconnect-windows-x64-<commit>` artifact after a successful run:
 

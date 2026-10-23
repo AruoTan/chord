@@ -10,6 +10,11 @@ on:
         description: Optional public download directory for the generated Scoop manifest
         required: false
         type: string
+      cache_revision:
+        description: Increase when changing Craft, toolchain, or dependency configuration
+        default: '1'
+        required: false
+        type: string
   push:
     tags:
       - 'v*'
@@ -26,6 +31,7 @@ jobs:
         shell: pwsh
     env:
       CRAFT_ROOT: C:\CraftRoot
+      CRAFT_SNAPSHOT_FILE: C:\CraftEnvironment\environment.tar.zst
       SCOOP_BASE_URL: ${{ inputs.scoop_base_url }}
       SCCACHE_GHA_ENABLED: 'true'
 
@@ -33,10 +39,32 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
+        id: python
         with:
           python-version: '3.12'
 
+      - name: Identify runner image for the environment cache
+        id: cache-id
+        run: |
+          if (-not $env:ImageVersion) { throw 'Runner image version is unavailable' }
+          "image=$env:ImageVersion" >> $env:GITHUB_OUTPUT
+
+      - name: Restore installed Craft and dependencies
+        id: environment
+        uses: actions/cache/restore@v4
+        with:
+          path: C:/CraftEnvironment/environment.tar.zst
+          # Application build and validation edits do not change the dependency environment.
+          key: craft-env-v1-${{ steps.cache-id.outputs.image }}-py${{ steps.python.outputs.python-version }}-${{ inputs.cache_revision || '1' }}-desktop-msvc2022-relwithdebinfo
+          # Reuse compatible snapshots saved with the previous script-hash keys.
+          restore-keys: craft-env-v1-${{ steps.cache-id.outputs.image }}-py${{ steps.python.outputs.python-version }}-${{ inputs.cache_revision || '1' }}-
+
+      - name: Restore directory junctions and refresh runner paths
+        if: steps.environment.outputs.cache-matched-key != ''
+        run: python .github/scripts/cache-craft-environment.py restore
+
       - name: Restore Craft downloads and dependency binaries
+        if: steps.environment.outputs.cache-matched-key == ''
         id: downloads
         uses: actions/cache/restore@v4
         with:
@@ -49,6 +77,7 @@ jobs:
           version: v0.10.0
 
       - name: Bootstrap KDE Craft (MSVC 2022, x64)
+        if: steps.environment.outputs.cache-matched-key == ''
         run: |
           $ErrorActionPreference = 'Stop'
           . ./.github/scripts/initialize-craft-path.ps1
@@ -67,8 +96,34 @@ jobs:
             Stop-Transcript
           }
 
+      - name: Install build and packaging dependencies
+        if: steps.environment.outputs.cache-matched-key == ''
+        run: ./.github/scripts/build-windows.ps1 -DependenciesOnly
+
+      - name: Prepare dependency environment snapshot
+        id: snapshot
+        if: steps.environment.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: python .github/scripts/cache-craft-environment.py save
+
+      - name: Cache installed Craft and dependencies
+        if: steps.environment.outputs.cache-hit != 'true' && steps.snapshot.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: C:/CraftEnvironment/environment.tar.zst
+          key: ${{ steps.environment.outputs.cache-primary-key }}
+
+      - name: Remove temporary environment archive
+        if: always()
+        run: |
+          if (Test-Path $env:CRAFT_SNAPSHOT_FILE) {
+            Remove-Item $env:CRAFT_SNAPSHOT_FILE -Force
+          }
+
       - name: Build checkout and package installer and portable archive
-        run: ./.github/scripts/build-windows.ps1
+        timeout-minutes: 30
+        run: ./.github/scripts/build-windows.ps1 -SkipDependencies
 
       - name: Save Craft downloads even if bootstrap or packaging failed
         if: always() && !cancelled() && steps.downloads.outcome == 'success'
@@ -97,6 +152,8 @@ jobs:
           if (Test-Path "$env:RUNNER_TEMP/craft-bootstrap.log") {
             Copy-Item "$env:RUNNER_TEMP/craft-bootstrap.log" $diagnostics -Force
           }
+          Get-ChildItem "$env:TEMP/kdeconnect-portable-probe.*.log" -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $diagnostics -Force
 
       - name: Upload Craft logs on failure
         if: failure()
