@@ -9,6 +9,8 @@ $source = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $craftRoot = $env:CRAFT_ROOT
 if (-not $craftRoot) { $craftRoot = 'C:\CraftRoot' }
 $env:CRAFT_ROOT = $craftRoot
+$brotliVersion = $env:CRAFT_BROTLI_VERSION
+if (-not $brotliVersion) { $brotliVersion = '1.2.0' }
 . "$PSScriptRoot/enter-craft-environment.ps1"
 Set-Location $source
 
@@ -20,6 +22,8 @@ New-Item -ItemType Directory $packageOutput | Out-Null
 $options = @(
     # Craft resolves runtime images by build type; match the dependency snapshot.
     '--ci-mode', '--buildtype', 'RelWithDebInfo',
+    # Craft's 1.2.1 blueprint is missing its download target; 1.2.0 has cached binaries.
+    '--options', "libs/brotli.version=$brotliVersion",
     '--options', 'kdeconnect-kde.version=master',
     '--options', "kdeconnect-kde.srcDir=$source",
     '--options', 'kdeconnect-kde.packageAppx=False',

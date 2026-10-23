@@ -115,6 +115,12 @@ void CompositeFileTransferJob::slotProcessedAmount(KJob * /*job*/, KJob::Unit un
     }
 }
 
+void CompositeFileTransferJob::slotInfoMessage(KJob *, const QString &message)
+{
+    setProcessedAmount(Bytes, m_totalSentPayloadSize + m_currentJobSentPayloadSize);
+    Q_EMIT infoMessage(this, message);
+}
+
 void CompositeFileTransferJob::slotResult(KJob *job)
 {
     m_currentJob = nullptr;

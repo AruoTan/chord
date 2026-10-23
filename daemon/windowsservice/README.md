@@ -46,6 +46,28 @@ While a service is registered, D-Bus activation also selects background mode.
 Other plugins keep their normal behavior, including desktop notifications and
 opening received URLs. Users can still explicitly open a GUI themselves.
 
+On Windows 10/11, incoming Share and Receive transfers use native Windows
+notifications. One notification follows each receiving batch, showing the source,
+current file, received bytes, entry count, percentage, and speed when available.
+Updates are limited to twice per second and do not repeatedly show popups. During
+SHA-256 verification the notification says `Verifying SHA-256...`; it reports
+completion only after verification succeeds. Missing digests from older senders
+remain supported and do not imply verified contents. Failures and cancellations
+produce a final notification. Dismissing progress does not cancel the transfer;
+progress stays dismissed, but the final result can show a new popup.
+
+The daemon automatically creates the current user's `KDE Connect Transfers`
+Start menu shortcut and registers its notification COM activator under
+`HKCU\Software\Classes\CLSID\{5FA5D3F1-182B-49FD-A313-C06C5336CC70}`.
+No elevation or MSIX installation is required, including for portable/Scoop
+builds. Restart the daemon after moving its files to refresh the paths. Clicking
+a notification does not open the app or indicator; if necessary, Windows starts
+only the daemon in background mode. Windows notification settings and Do Not
+Disturb control whether popups appear. Notification failures are logged and do
+not stop file reception. Removing a portable installation does not remove this
+per-user registration; after stopping KDE Connect, delete that shortcut and
+registry key to remove it completely.
+
 First pairing remains manual. For example, list devices and request pairing
 with a known device ID, then confirm the request on the phone:
 

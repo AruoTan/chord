@@ -26,4 +26,9 @@ public:
     KJobTrackerInterface *jobTracker() override;
     Q_SCRIPTABLE void sendSimpleNotification(const QString &eventId, const QString &title, const QString &text, const QString &iconName) override;
     void quit() override;
+
+private:
+#ifdef Q_OS_WIN
+    KJobTrackerInterface *m_transferTracker = nullptr;
+#endif
 };

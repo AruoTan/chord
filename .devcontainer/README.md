@@ -52,6 +52,11 @@ with the current upstream Craft tool and dependency blueprints; it does not
 build an unrelated upstream KDE Connect release. No signing credentials are
 required.
 
+Brotli is pinned to 1.2.0 through `CRAFT_BROTLI_VERSION` to avoid an upstream
+1.2.1 blueprint that sets the default version without defining its download
+target. The official MSVC 2022 RelWithDebInfo cache provides 1.2.0 binaries.
+The same pin applies to dependency installation, application builds and packaging.
+
 Application messages use English regardless of the system language. Project
 translation catalogs are not built or installed. The `.craftignore` file also
 excludes non-English Qt and KDE dependency catalogs from both Windows packages;
@@ -99,7 +104,8 @@ cached between runs, including failed runs. Installed Craft tools, dependency
 images and libraries are cached separately after dependency installation
 succeeds, before compiling the application. A hit skips bootstrap and dependency
 installation. The environment cache is keyed by runner image version, Python
-version and build configuration; changing application source alone reuses it.
+version, build configuration and the Brotli pin; changing application source
+alone reuses it. Snapshots created without that pin are not restored.
 Increase the optional `cache_revision` workflow input to force a fresh snapshot.
 Snapshots omit downloads, logs, package outputs and dependency work trees, while
 retaining the image directories needed for runtime packaging. Work trees are

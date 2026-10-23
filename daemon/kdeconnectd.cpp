@@ -112,6 +112,12 @@ int main(int argc, char *argv[])
     KCrash::initialize();
 
     QCommandLineParser parser;
+#ifdef Q_OS_WIN
+    parser.setSingleDashWordOptionMode(QCommandLineParser::ParseAsLongOptions);
+    QCommandLineOption embeddingOption(QStringLiteral("Embedding"));
+    embeddingOption.setFlags(QCommandLineOption::HiddenFromHelp);
+    parser.addOption(embeddingOption);
+#endif
     QCommandLineOption replaceOption({QStringLiteral("replace")}, i18n("Replace an existing instance"));
     parser.addOption(replaceOption);
     QCommandLineOption backgroundOption(QStringLiteral("background"), i18n("Run background monitoring without opening the app or indicator"));
@@ -130,7 +136,10 @@ int main(int argc, char *argv[])
 
     bool background = parser.isSet(backgroundOption);
 #ifdef Q_OS_WIN
-    background = background || WindowsService::registeredForCurrentUser();
+    background = background || parser.isSet(embeddingOption) || WindowsService::registeredForCurrentUser();
+    if (parser.isSet(embeddingOption)) {
+        FreeConsole();
+    }
 #endif
     if (parser.isSet(heartbeatOption) != parser.isSet(stopOption) || (parser.isSet(heartbeatOption) && !background)) {
         qCritical() << "Service supervision requires background mode and both event names";

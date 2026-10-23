@@ -57,6 +57,7 @@ jobs:
         shell: pwsh
     env:
       CRAFT_ROOT: C:\CraftRoot
+      CRAFT_BROTLI_VERSION: '1.2.0'
       CRAFT_SNAPSHOT_FILE: C:\CraftEnvironment\environment.tar.zst
       SCOOP_BASE_URL: ${{ inputs.scoop_base_url }}
       SCCACHE_GHA_ENABLED: 'true'
@@ -80,10 +81,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: C:/CraftEnvironment/environment.tar.zst
-          # Application build and validation edits do not change the dependency environment.
-          key: craft-env-v1-${{ steps.cache-id.outputs.image }}-py${{ steps.python.outputs.python-version }}-${{ inputs.cache_revision || '1' }}-desktop-msvc2022-relwithdebinfo
-          # Reuse compatible snapshots saved with the previous script-hash keys.
-          restore-keys: craft-env-v1-${{ steps.cache-id.outputs.image }}-py${{ steps.python.outputs.python-version }}-${{ inputs.cache_revision || '1' }}-
+          # Dependency pins invalidate snapshots; application source edits do not.
+          key: craft-env-v1-${{ steps.cache-id.outputs.image }}-py${{ steps.python.outputs.python-version }}-${{ inputs.cache_revision || '1' }}-desktop-msvc2022-relwithdebinfo-brotli${{ env.CRAFT_BROTLI_VERSION }}
 
       - name: Restore directory junctions and refresh runner paths
         if: steps.environment.outputs.cache-matched-key != ''

@@ -221,6 +221,7 @@ void FileTransferJob::verifyChecksum()
         return;
     }
     const QString path = m_destination.toLocalFile();
+    Q_EMIT infoMessage(this, i18n("Verifying SHA-256..."));
     connect(&m_checksumWatcher, &QFutureWatcher<QByteArray>::finished, this, [this] {
         if (isFinished()) {
             return;

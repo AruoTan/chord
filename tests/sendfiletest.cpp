@@ -16,6 +16,7 @@
 #include <QTemporaryFile>
 #include <QTest>
 #include <backends/lan/uploadjob.h>
+#include <core/compositefiletransferjob.h>
 #include <core/filetransferjob.h>
 #include <core/pluginloader.h>
 #include <kdeconnectconfig.h>
@@ -42,6 +43,37 @@ public:
     }
 
 private Q_SLOTS:
+    void testCompositeVerificationStatus()
+    {
+        TestDevice device(this, KdeConnectConfig::instance().deviceId());
+        QTemporaryDir destination;
+        QVERIFY(destination.isValid());
+        const QByteArray content("verified file");
+        auto input = QSharedPointer<QBuffer>::create();
+        input->setData(content);
+        QVERIFY(input->open(QIODevice::ReadOnly));
+        NetworkPacket packet(PACKET_TYPE_SHARE_REQUEST);
+        packet.setPayload(input, content.size());
+        packet.set(QStringLiteral("sha256"), QString::fromLatin1(QCryptographicHash::hash(content, QCryptographicHash::Sha256).toHex()));
+        packet.set(QStringLiteral("totalPayloadSize"), content.size());
+        packet.set(QStringLiteral("numberOfFiles"), 1);
+        CompositeFileTransferJob composite(&device, this);
+        composite.setAutoDelete(false);
+        QSignalSpy status(&composite, &KJob::infoMessage);
+        QSignalSpy result(&composite, &KJob::result);
+        connect(&composite, &KJob::infoMessage, this, [&composite, &content, &result](KJob *job, const QString &) {
+            QCOMPARE(job, &composite);
+            QCOMPARE(job->processedAmount(KJob::Bytes), qulonglong(content.size()));
+            QCOMPARE(result.size(), 0);
+        });
+        QVERIFY(composite.addSubjob(packet.createPayloadTransferJob(QUrl::fromLocalFile(destination.filePath(QStringLiteral("received.txt"))))));
+        composite.start();
+        QVERIFY(result.wait());
+        QCOMPARE(composite.error(), 0);
+        QCOMPARE(status.size(), 1);
+        QCOMPARE(status.first().at(1).toString(), QStringLiteral("Verifying SHA-256..."));
+    }
+
     void testChecksum_data()
     {
         QTest::addColumn<QByteArray>("content");
@@ -73,8 +105,11 @@ private Q_SLOTS:
             delete job;
         });
         QSignalSpy result(job, &KJob::result);
+        QSignalSpy status(job, &KJob::infoMessage);
         job->start();
         QVERIFY(result.wait());
+        QCOMPARE(status.size(), 1);
+        QCOMPARE(status.first().at(1).toString(), QStringLiteral("Verifying SHA-256..."));
         QCOMPARE(job->error() == 0, valid);
         QCOMPARE(QFileInfo::exists(path), valid);
         if (valid) {

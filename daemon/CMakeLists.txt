@@ -33,6 +33,10 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/org.kde.kdeconnect.service DESTINATION
 install(TARGETS kdeconnectd ${KDECONNECT_INSTALL_TARGETS_DEFAULT_ARGS})
 
 if(WIN32)
+    target_sources(kdeconnectd PRIVATE transfernotificationtracker.cpp windowstransfernotification.cpp)
+    kde_source_files_enable_exceptions(windowstransfernotification.cpp)
+    target_link_libraries(kdeconnectd runtimeobject windowsapp ole32 shell32 propsys uuid)
+    target_compile_definitions(kdeconnectd PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_subdirectory(windowsservice)
 endif()
 

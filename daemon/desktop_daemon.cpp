@@ -22,10 +22,17 @@
 #include "core/device.h"
 #include "core/openconfig.h"
 
+#ifdef Q_OS_WIN
+#include "transfernotificationtracker.h"
+#endif
+
 DesktopDaemon::DesktopDaemon(QObject *parent)
     : Daemon(parent)
 {
     qApp->setWindowIcon(QIcon::fromTheme(QStringLiteral("kdeconnect")));
+#ifdef Q_OS_WIN
+    m_transferTracker = createWindowsTransferTracker(this);
+#endif
 }
 
 void DesktopDaemon::askPairingConfirmation(Device *device)
@@ -75,7 +82,11 @@ void DesktopDaemon::reportError(const QString &title, const QString &text)
 
 KJobTrackerInterface *DesktopDaemon::jobTracker()
 {
+#ifdef Q_OS_WIN
+    return m_transferTracker;
+#else
     return KIO::getJobTracker();
+#endif
 }
 
 // NOTE: eventId must match a notificatiion event id defined in plugins/kdeconnect.notifyrc

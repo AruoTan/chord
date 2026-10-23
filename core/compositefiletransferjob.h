@@ -31,6 +31,7 @@ protected:
 private Q_SLOTS:
     void slotProcessedAmount(KJob *job, KJob::Unit unit, qulonglong amount);
     void slotResult(KJob *job) override;
+    void slotInfoMessage(KJob *job, const QString &message) override;
     void startNextSubJob();
 
 private:
