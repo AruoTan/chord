@@ -59,6 +59,9 @@ progress stays dismissed, but the final result can show a new popup.
 The daemon automatically creates the current user's `KDE Connect Transfers`
 Start menu shortcut and registers its notification COM activator under
 `HKCU\Software\Classes\CLSID\{5FA5D3F1-182B-49FD-A313-C06C5336CC70}`.
+It also registers `DisplayName` and `CustomActivator` under
+`HKCU\Software\Classes\AppUserModelId\org.kde.kdeconnect.transfers` and sets
+the daemon's process AUMID to the same identity.
 No elevation or MSIX installation is required, including for portable/Scoop
 builds. Restart the daemon after moving its files to refresh the paths. Clicking
 a notification does not open the app or indicator; if necessary, Windows starts
@@ -66,7 +69,27 @@ only the daemon in background mode. Windows notification settings and Do Not
 Disturb control whether popups appear. Notification failures are logged and do
 not stop file reception. Removing a portable installation does not remove this
 per-user registration; after stopping KDE Connect, delete that shortcut and
-registry key to remove it completely.
+both registry keys to remove it completely.
+
+Notification initialization failures are retried during active transfers, with
+a five-second delay between failed API attempts. A blocked initial notification
+is retried if Windows notifications are enabled before the transfer finishes.
+The daemon respects disabled notification settings; it does not change them.
+For unpackaged desktop apps, `ToastNotifier.Setting()` can fail with
+`0x80070490` even though toast delivery is available. That query failure is logged
+once and cached until the notifier is reinitialized, avoiding repeated exceptions
+on progress updates. It does not block `Show` or `Update`; Windows still applies
+notification preferences when processing those calls. Other API errors retain
+the retry delay.
+Registration, notification settings, Show requests, and failures with HRESULTs
+are written to `transfer-notifications.log` in the user configuration directory.
+The log rotates at about 1 MiB. `Show accepted` records API acceptance, which
+does not guarantee a popup when Do Not Disturb is active. After updating, restart
+the background service or daemon before testing a new transfer. On the receiver:
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\kdeconnect\transfer-notifications.log" -Encoding UTF8 -Tail 40
+```
 
 First pairing remains manual. For example, list devices and request pairing
 with a known device ID, then confirm the request on the phone:

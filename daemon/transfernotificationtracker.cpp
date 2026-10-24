@@ -135,7 +135,7 @@ void TransferNotificationTracker::publish(KJob *job, Transfer &transfer, bool fi
             notification.text += QStringLiteral("\n") + job->errorText();
         }
     }
-    m_notify(notification, !transfer.shown || final);
-    transfer.shown = true;
-    transfer.dirty = false;
+    const bool accepted = m_notify(notification, !transfer.shown || final);
+    transfer.shown = transfer.shown || accepted;
+    transfer.dirty = !accepted;
 }

@@ -23,7 +23,8 @@ struct TransferNotification {
 class TransferNotificationTracker : public KJobTrackerInterface
 {
 public:
-    using Notify = std::function<void(const TransferNotification &, bool replace)>;
+    // Return false to retry delivery while the transfer is active.
+    using Notify = std::function<bool(const TransferNotification &, bool replace)>;
     explicit TransferNotificationTracker(Notify notify, QObject *parent = nullptr);
     void registerJob(KJob *job) override;
     void unregisterJob(KJob *job) override;

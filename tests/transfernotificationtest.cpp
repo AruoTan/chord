@@ -65,6 +65,7 @@ private Q_SLOTS:
         TransferNotificationTracker tracker([&](const TransferNotification &notification, bool replace) {
             notifications.append(notification);
             replacements.append(replace);
+            return true;
         });
         TransferJob job;
         tracker.registerJob(&job);
@@ -105,6 +106,7 @@ private Q_SLOTS:
         QList<TransferNotification> notifications;
         TransferNotificationTracker tracker([&](const TransferNotification &notification, bool) {
             notifications.append(notification);
+            return true;
         });
         TransferJob first;
         TransferJob second;
@@ -134,6 +136,7 @@ private Q_SLOTS:
         QList<TransferNotification> notifications;
         TransferNotificationTracker tracker([&](const TransferNotification &notification, bool) {
             notifications.append(notification);
+            return true;
         });
         TransferJob empty;
         tracker.registerJob(&empty);
@@ -152,6 +155,36 @@ private Q_SLOTS:
         detached.complete();
         QTest::qWait(600);
         QCOMPARE(notifications.size(), count);
+    }
+
+    void retryInitialNotification()
+    {
+        bool enabled = false;
+        QList<TransferNotification> attempts;
+        QList<bool> replacements;
+        TransferNotificationTracker tracker([&](const TransferNotification &notification, bool replace) {
+            attempts.append(notification);
+            replacements.append(replace);
+            return enabled;
+        });
+        TransferJob job;
+        tracker.registerJob(&job);
+        job.start();
+        QCOMPARE(attempts.size(), 1);
+        QVERIFY(replacements.last());
+        QTRY_COMPARE(attempts.size(), 2);
+        QCOMPARE(attempts.first().tag, attempts.last().tag);
+        QVERIFY(replacements.last());
+        enabled = true;
+        QTRY_COMPARE(attempts.size(), 3);
+        QVERIFY(replacements.last());
+        job.progress(50, 100);
+        QTRY_COMPARE(attempts.size(), 4);
+        QVERIFY(!replacements.last());
+        QCOMPARE(attempts.last().progress, 0.5);
+        job.complete();
+        QVERIFY(attempts.last().finished);
+        QVERIFY(replacements.last());
     }
 };
 

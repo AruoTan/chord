@@ -3,12 +3,18 @@
  */
 
 #include "core/compositefiletransferjob.h"
+#include "core/kdeconnectconfig.h"
 #include "transfernotificationtracker.h"
 
 #include <KIO/JobTracker>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QXmlStreamWriter>
@@ -37,6 +43,44 @@ using Microsoft::WRL::RuntimeClassFlags;
 constexpr wchar_t appId[] = L"org.kde.kdeconnect.transfers";
 constexpr wchar_t group[] = L"receiving";
 constexpr wchar_t activatorId[] = L"{5FA5D3F1-182B-49FD-A313-C06C5336CC70}";
+
+void logNotification(const QString &message)
+{
+    static const QString path = KdeConnectConfig::instance().baseConfigDir().filePath(QStringLiteral("transfer-notifications.log"));
+    static QMutex mutex;
+    const QMutexLocker lock(&mutex);
+    QFile file(path);
+    if (file.size() > 1024 * 1024) {
+        QFile::remove(path + QStringLiteral(".1"));
+        file.rename(path + QStringLiteral(".1"));
+        file.setFileName(path);
+    }
+    if (file.open(QIODevice::WriteOnly | QIODevice::Append)) {
+        file.write(QStringLiteral("%1 pid=%2 %3\n")
+                       .arg(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs))
+                       .arg(QCoreApplication::applicationPid())
+                       .arg(message)
+                       .toUtf8());
+    }
+    qInfo().noquote() << "Windows transfer notifications:" << message;
+}
+
+QString settingName(NotificationSetting setting)
+{
+    switch (setting) {
+    case NotificationSetting::Enabled:
+        return QStringLiteral("Enabled");
+    case NotificationSetting::DisabledForApplication:
+        return QStringLiteral("DisabledForApplication");
+    case NotificationSetting::DisabledForUser:
+        return QStringLiteral("DisabledForUser");
+    case NotificationSetting::DisabledByGroupPolicy:
+        return QStringLiteral("DisabledByGroupPolicy");
+    case NotificationSetting::DisabledByManifest:
+        return QStringLiteral("DisabledByManifest");
+    }
+    return QString::number(static_cast<int>(setting));
+}
 
 class NotificationActivator : public RuntimeClass<RuntimeClassFlags<Microsoft::WRL::ClassicCom>, INotificationActivationCallback>
 {
@@ -79,33 +123,26 @@ class WindowsTransferNotifications
 public:
     WindowsTransferNotifications()
     {
-        try {
-            initialize();
-        } catch (const winrt::hresult_error &error) {
-            disable(error);
-        }
+        logNotification(QStringLiteral("Starting notification backend: %1").arg(QCoreApplication::applicationFilePath()));
+        ensureReady();
     }
 
     ~WindowsTransferNotifications()
     {
-        if (m_cookie) {
-            CoRevokeClassObject(m_cookie);
-        }
-        m_notifier = nullptr;
-        if (m_uninitialize) {
-            RoUninitialize();
-        }
+        reset();
     }
 
-    void notify(const TransferNotification &notification, bool replace)
+    bool notify(const TransferNotification &notification, bool replace)
     {
-        if (m_failed) {
-            return;
+        if ((m_retryTimer.isValid() && !m_retryTimer.hasExpired(5000)) || !ensureReady()) {
+            return false;
         }
         try {
-            if (m_notifier.Setting() != NotificationSetting::Enabled) {
-                return;
+            m_stage = QStringLiteral("Read notification settings");
+            if (!notificationsEnabled()) {
+                return false;
             }
+            m_stage = QStringLiteral("Build notification data");
             NotificationData data;
             data.SequenceNumber(notification.sequence);
             data.Values().Insert(L"title", hstring(notification.title));
@@ -116,13 +153,18 @@ public:
                                  hstring(notification.progress < 0 ? QStringLiteral("indeterminate") : QString::number(notification.progress, 'f', 4)));
             const auto tag = hstring(notification.tag);
             if (!replace) {
+                m_stage = QStringLiteral("Update notification");
                 // A dismissed notification stays dismissed until the final result.
                 if (m_notifier.Update(data, tag, group) == NotificationUpdateResult::Failed) {
-                    qWarning() << "Windows transfer notification update failed";
+                    logNotification(QStringLiteral("Update failed: tag=%1").arg(notification.tag));
+                    m_retryTimer.start();
+                    return false;
                 }
-                return;
+                m_retryTimer.invalidate();
+                return true;
             }
 
+            m_stage = QStringLiteral("Build notification XML");
             QString xml;
             QXmlStreamWriter writer(&xml);
             writer.writeStartElement(QStringLiteral("toast"));
@@ -148,25 +190,93 @@ public:
             toast.Group(group);
             toast.Data(data);
             toast.ExpirationTime(winrt::clock::now() + std::chrono::hours(24));
-            toast.Failed([](const ToastNotification &, const ToastFailedEventArgs &args) {
-                qWarning() << "Windows transfer notification rejected:" << Qt::hex << static_cast<quint32>(args.ErrorCode().value);
+            toast.Failed([tag = notification.tag](const ToastNotification &, const ToastFailedEventArgs &args) {
+                logNotification(QStringLiteral("Notification rejected: tag=%1 HRESULT=0x%2")
+                                    .arg(tag)
+                                    .arg(static_cast<quint32>(args.ErrorCode().value), 8, 16, QLatin1Char('0')));
             });
+            m_stage = QStringLiteral("Show notification");
+            m_lastToast = toast;
             m_notifier.Show(toast);
+            logNotification(
+                QStringLiteral("Show accepted: tag=%1 phase=%2").arg(notification.tag, notification.finished ? notification.title : notification.status));
+            m_retryTimer.invalidate();
+            return true;
         } catch (const winrt::hresult_error &error) {
-            disable(error);
+            reportFailure(error);
+            return false;
         }
     }
 
 private:
-    void disable(const winrt::hresult_error &error)
+    bool notificationsEnabled()
     {
-        m_failed = true;
-        qWarning() << "Windows transfer notifications unavailable:" << QString::fromWCharArray(error.message().c_str()) << Qt::hex
-                   << static_cast<quint32>(error.code().value);
+        if (m_settingsUnavailable) {
+            return true;
+        }
+        try {
+            const auto setting = m_notifier.Setting();
+            if (m_lastSetting != static_cast<int>(setting)) {
+                logNotification(QStringLiteral("Notification setting: %1").arg(settingName(setting)));
+                m_lastSetting = static_cast<int>(setting);
+            }
+            return setting == NotificationSetting::Enabled;
+        } catch (const winrt::hresult_error &error) {
+            if (error.code() != HRESULT_FROM_WIN32(ERROR_NOT_FOUND)) {
+                throw;
+            }
+            // Setting can be unavailable for unpackaged desktop apps; Show still enforces Windows preferences.
+            logNotification(QStringLiteral("Notification settings unavailable: HRESULT=0x80070490; attempting Show/Update"));
+            m_settingsUnavailable = true;
+            return true;
+        }
+    }
+
+    void reportFailure(const winrt::hresult_error &error)
+    {
+        logNotification(QStringLiteral("%1 failed: HRESULT=0x%2 %3")
+                            .arg(m_stage)
+                            .arg(static_cast<quint32>(error.code().value), 8, 16, QLatin1Char('0'))
+                            .arg(QString::fromWCharArray(error.message().c_str())));
+        m_retryTimer.start();
+    }
+
+    void reset()
+    {
+        m_lastToast = nullptr;
+        m_notifier = nullptr;
+        if (m_cookie) {
+            CoRevokeClassObject(m_cookie);
+            m_cookie = 0;
+        }
+        if (m_uninitialize) {
+            RoUninitialize();
+            m_uninitialize = false;
+        }
+        m_lastSetting = -1;
+        m_settingsUnavailable = false;
+    }
+
+    bool ensureReady()
+    {
+        if (m_notifier) {
+            return true;
+        }
+        try {
+            initialize();
+            m_retryTimer.invalidate();
+            logNotification(QStringLiteral("Notification identity registered: org.kde.kdeconnect.transfers"));
+            return true;
+        } catch (const winrt::hresult_error &error) {
+            reportFailure(error);
+            reset();
+            return false;
+        }
     }
 
     void initialize()
     {
+        m_stage = QStringLiteral("RoInitialize");
         const HRESULT initialized = RoInitialize(RO_INIT_SINGLETHREADED);
         m_uninitialize = SUCCEEDED(initialized);
         if (initialized != RPC_E_CHANGED_MODE) {
@@ -178,8 +288,10 @@ private:
         if (!factory) {
             winrt::throw_hresult(E_OUTOFMEMORY);
         }
+        m_stage = QStringLiteral("Register COM class factory");
         winrt::check_hresult(CoRegisterClassObject(clsid, factory.Get(), CLSCTX_LOCAL_SERVER, REGCLS_MULTIPLEUSE, &m_cookie));
 
+        m_stage = QStringLiteral("Create notification shortcut");
         const QString executable = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
         const QString programs = QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation);
         if (programs.isEmpty() || !QDir().mkpath(programs)) {
@@ -208,6 +320,7 @@ private:
         const QString link = QDir::toNativeSeparators(programs + QStringLiteral("/KDE Connect Transfers.lnk"));
         winrt::check_hresult(file->Save(link.toStdWString().c_str(), TRUE));
 
+        m_stage = QStringLiteral("Register COM server");
         QSettings server(QStringLiteral("HKEY_CURRENT_USER\\Software\\Classes\\CLSID\\") + QString::fromWCharArray(activatorId)
                              + QStringLiteral("\\LocalServer32"),
                          QSettings::NativeFormat);
@@ -216,13 +329,27 @@ private:
         if (server.status() != QSettings::NoError) {
             winrt::throw_hresult(E_ACCESSDENIED);
         }
+        m_stage = QStringLiteral("Register AUMID");
+        QSettings identity(QStringLiteral("HKEY_CURRENT_USER\\Software\\Classes\\AppUserModelId\\") + QString::fromWCharArray(appId), QSettings::NativeFormat);
+        identity.setValue(QStringLiteral("DisplayName"), QStringLiteral("KDE Connect Transfers"));
+        identity.setValue(QStringLiteral("CustomActivator"), QString::fromWCharArray(activatorId));
+        identity.sync();
+        if (identity.status() != QSettings::NoError) {
+            winrt::throw_hresult(E_ACCESSDENIED);
+        }
+        winrt::check_hresult(SetCurrentProcessExplicitAppUserModelID(appId));
+        m_stage = QStringLiteral("CreateToastNotifier");
         m_notifier = ToastNotificationManager::CreateToastNotifier(appId);
     }
 
     ToastNotifier m_notifier{nullptr};
+    ToastNotification m_lastToast{nullptr};
     DWORD m_cookie = 0;
     bool m_uninitialize = false;
-    bool m_failed = false;
+    int m_lastSetting = -1;
+    bool m_settingsUnavailable = false;
+    QString m_stage;
+    QElapsedTimer m_retryTimer;
 };
 
 class WindowsTransferTracker : public TransferNotificationTracker
@@ -246,7 +373,7 @@ KJobTrackerInterface *createWindowsTransferTracker(QObject *parent)
     auto notifications = std::make_shared<WindowsTransferNotifications>();
     return new WindowsTransferTracker(
         [notifications](const TransferNotification &notification, bool replace) {
-            notifications->notify(notification, replace);
+            return notifications->notify(notification, replace);
         },
         parent);
 }
