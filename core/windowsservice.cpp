@@ -3,6 +3,7 @@
  */
 
 #include "windowsservice.h"
+#include "daemon/windowsservice/desktopintegration.h"
 
 #include <windows.h>
 
@@ -33,6 +34,14 @@ bool WindowsService::registeredForCurrentUser()
     DWORD type = 0;
     DWORD bytes = 0;
     return RegGetValueW(HKEY_LOCAL_MACHINE, reinterpret_cast<LPCWSTR>(path.utf16()), L"DaemonPath", RRF_RT_REG_SZ, &type, nullptr, &bytes) == ERROR_SUCCESS;
+}
+
+bool WindowsService::removalInProgressForCurrentUser()
+{
+    DWORD removing = 0;
+    DWORD bytes = sizeof(removing);
+    return RegGetValueW(HKEY_CURRENT_USER, WindowsDesktop::stateKey, L"Removing", RRF_RT_REG_DWORD, nullptr, &removing, &bytes) == ERROR_SUCCESS
+        && removing == 1;
 }
 
 int WindowsService::configure(bool install)

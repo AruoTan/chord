@@ -9,5 +9,6 @@
 namespace WindowsService
 {
 KDECONNECTCORE_EXPORT bool registeredForCurrentUser();
+KDECONNECTCORE_EXPORT bool removalInProgressForCurrentUser();
 KDECONNECTCORE_EXPORT int configure(bool install);
 }

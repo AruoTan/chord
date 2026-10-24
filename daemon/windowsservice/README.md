@@ -22,6 +22,37 @@ Register starts the service immediately and updates an existing registration.
 Unregister stops the service and its owned worker, and removes the registration.
 Repeating unregister is harmless. Pairing data and the user installation are
 retained. Elevating with another account registers that account instead.
+User-state backup and cleanup use the desktop user's permissions, open the HKCU
+root for reading, and request write or delete access only on the affected subkeys.
+Registry permissions are not changed. Configuration failures include the numeric
+system error code even when the C++ runtime cannot describe it.
+Registry snapshots use `SHCopyKeyW` to copy values and subkeys without copying
+security descriptors. Restoring a pre-existing tree removes service-added data
+and copies the saved values into existing keys, preserving their ACLs. Keys
+that must be recreated use normal inherited permissions.
+
+The first registration records any existing legacy transfer-notification shortcut,
+notification registry keys and service runtime files. Updating or registering
+again keeps that original snapshot. Unregister waits for the worker to exit,
+removes service notifications, and restores the recorded state. Items created
+by the service are deleted, including its AUMID/COM
+registration, its Windows notification preferences, `background-status.json`,
+`background.log` and `transfer-notifications.log` (including rotated copies).
+The protected service host, service logs and empty service directories are also
+removed. Configuration, certificates, paired devices and unrelated files remain.
+An obsolete `KDE Connect Transfers.lnk` owned by the notification identity is
+deleted rather than restored. An unrelated shortcut with the same name is preserved.
+
+The temporary snapshot is stored under `HKCU\Software\KDEConnectBackgroundServiceState`
+and `%LOCALAPPDATA%\kdeconnect\service-state`, then removed after restoration.
+If cleanup fails, the command reports failure and retains recovery information;
+repeat `--service-unregister` after resolving the error. A cleanup retry does not
+overwrite state already restored successfully. While removal is in progress or
+awaiting a retry, the daemon refuses startup so D-Bus or notification activation
+cannot recreate the integration being removed. Finish removal before registering
+or starting again. Services installed by older
+versions have no original snapshot: removal deletes only the known integration
+and runtime items listed above, while retaining user configuration and pairing.
 
 The supervisor is named `KDEConnectBackground-<user SID>`. Its small standalone
 executable is copied to `%ProgramFiles%\KDE Connect Background\<user SID>` with
@@ -56,20 +87,25 @@ remain supported and do not imply verified contents. Failures and cancellations
 produce a final notification. Dismissing progress does not cancel the transfer;
 progress stays dismissed, but the final result can show a new popup.
 
-The daemon automatically creates the current user's `KDE Connect Transfers`
-Start menu shortcut and registers its notification COM activator under
+The daemon registers its notification identity directly in the current user's
+registry, without creating a Start menu shortcut. Its notification COM activator is under
 `HKCU\Software\Classes\CLSID\{5FA5D3F1-182B-49FD-A313-C06C5336CC70}`.
 It also registers `DisplayName` and `CustomActivator` under
 `HKCU\Software\Classes\AppUserModelId\org.kde.kdeconnect.transfers` and sets
 the daemon's process AUMID to the same identity.
+At startup, it removes the obsolete `KDE Connect Transfers.lnk` created by older
+versions only when the shortcut's AUMID matches this notification identity.
 No elevation or MSIX installation is required, including for portable/Scoop
 builds. Restart the daemon after moving its files to refresh the paths. Clicking
 a notification does not open the app or indicator; if necessary, Windows starts
 only the daemon in background mode. Windows notification settings and Do Not
 Disturb control whether popups appear. Notification failures are logged and do
 not stop file reception. Removing a portable installation does not remove this
-per-user registration; after stopping KDE Connect, delete that shortcut and
-both registry keys to remove it completely.
+per-user registration automatically. For service use, run `--service-unregister`
+before removing the installation so service-created integration is cleaned up.
+For manual use without a service, stop KDE Connect, then delete both registry
+keys to remove its notification registration. Starting KDE
+Connect manually again will register the integration it needs.
 
 Notification initialization failures are retried during active transfers, with
 a five-second delay between failed API attempts. A blocked initial notification
@@ -137,7 +173,24 @@ The Windows workflow first builds this directory without Qt and exercises real
 SCM registration, token/session selection, protected host installation, process
 interruption, heartbeat timeout, SCM crash recovery, deliberate stop, repeat
 registration, and repeat removal using `testworker.cpp`. The fixture never loads
-user pairing data. On a runner without an interactive session, user-token and
+user pairing data. It also verifies desktop integration cleanup, restoration of
+pre-existing files and registry values, preservation across repeated registration,
+unnamed values, expandable strings, multi-strings, binary and 64-bit data,
+source ACL isolation in backups, existing ACL preservation during restoration,
+removal of service-created values and nested keys,
+recovery after a cleanup failure, and legacy-service removal. Registry handles
+are explicitly closed before removal or re-registration. The workflow uploads
+both the supervisor log and a transcript of all test output, including failures.
+Failed helper invocations include their merged output and decimal/hexadecimal
+exit code directly in the test exception.
+Cleanup failures are reported separately without replacing the original test
+failure, and failure to save a log does not prevent service shutdown.
+Shortcut migration
+checks remove owned legacy entries, preserve unrelated entries, and ensure
+unregister does not restore obsolete shortcuts from a snapshot. Native notification
+history cleanup is part of the MSVC package; the MinGW container build checks the
+standalone host without the Windows SDK notification implementation.
+On a runner without an interactive session, user-token and
 worker recovery checks are explicitly skipped; SCM and installation checks
 still run. To require all checks on an interactive Windows machine, run
 `.github/scripts/test-windows-service.ps1 -BuildDirectory build-service -RequireInteractive`

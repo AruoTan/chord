@@ -38,13 +38,19 @@ jobs:
           cmake --build build-service --config Release --parallel 2
           if ($LASTEXITCODE) { throw 'Service build failed' }
       - name: Verify registration, user session, recovery, and removal
-        run: ./.github/scripts/test-windows-service.ps1 -BuildDirectory build-service
+        run: |
+          Start-Transcript -Path build-service/service-test-transcript.log
+          try {
+            ./.github/scripts/test-windows-service.ps1 -BuildDirectory build-service
+          } finally {
+            Stop-Transcript
+          }
       - name: Upload service diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-service-test-logs-${{ github.sha }}
-          path: build-service/service-test.log
+          path: build-service/service-test*.log
           if-no-files-found: ignore
           retention-days: 7
 
