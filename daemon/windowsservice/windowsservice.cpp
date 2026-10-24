@@ -15,7 +15,15 @@
 #include <userenv.h>
 #include <wtsapi32.h>
 
+#include "desktopintegration.h"
+
+#ifdef _MSC_VER
+#include <roapi.h>
+#include <winrt/Windows.UI.Notifications.h>
+#endif
+
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -279,6 +287,326 @@ void copyHost(const std::filesystem::path &source, const std::filesystem::path &
     check(FlushFileBuffers(output.get()), "Flush service host");
 }
 
+struct RegistryCloser {
+    void operator()(HKEY key) const
+    {
+        if (key) {
+            RegCloseKey(key);
+        }
+    }
+};
+using RegistryHandle = std::unique_ptr<std::remove_pointer_t<HKEY>, RegistryCloser>;
+
+void checkRegistry(LSTATUS error, const char *operation)
+{
+    if (error != ERROR_SUCCESS) {
+        throw std::system_error(error, std::system_category(), operation);
+    }
+}
+
+RegistryHandle openKey(HKEY root, const std::wstring &path, bool create = false, REGSAM access = KEY_READ)
+{
+    HKEY key = nullptr;
+    const auto error = create ? RegCreateKeyExW(root, path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &key, nullptr)
+                              : RegOpenKeyExW(root, path.c_str(), 0, access, &key);
+    if (!create && (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)) {
+        return {};
+    }
+    checkRegistry(error, "Open desktop state registry key");
+    return RegistryHandle(key);
+}
+
+void deleteKey(HKEY root, const std::wstring &path)
+{
+    const auto error = RegDeleteTreeW(root, path.c_str());
+    if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+        checkRegistry(error, "Remove desktop state registry key");
+    }
+}
+
+void writeDword(HKEY key, const std::wstring &name, DWORD value)
+{
+    checkRegistry(RegSetValueExW(key, name.c_str(), 0, REG_DWORD, reinterpret_cast<const BYTE *>(&value), sizeof(value)), "Save desktop state metadata");
+}
+
+DWORD readDword(HKEY key, const std::wstring &name, DWORD fallback = 0)
+{
+    DWORD value = 0;
+    DWORD size = sizeof(value);
+    const auto error = RegGetValueW(key, nullptr, name.c_str(), RRF_RT_REG_DWORD, nullptr, &value, &size);
+    if (error == ERROR_FILE_NOT_FOUND) {
+        return fallback;
+    }
+    checkRegistry(error, "Read desktop state metadata");
+    return value;
+}
+
+std::filesystem::path userFolder(REFKNOWNFOLDERID id)
+{
+    PWSTR raw = nullptr;
+    if (FAILED(SHGetKnownFolderPath(id, 0, nullptr, &raw))) {
+        throw std::runtime_error("Cannot locate user desktop state directory");
+    }
+    const std::filesystem::path path(raw);
+    CoTaskMemFree(raw);
+    return path;
+}
+
+class UserStateScope
+{
+public:
+    UserStateScope()
+    {
+        HANDLE raw = nullptr;
+        check(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw), "Open registration user token");
+        Handle token(raw);
+        TOKEN_ELEVATION_TYPE type{};
+        DWORD size = 0;
+        check(GetTokenInformation(token.get(), TokenElevationType, &type, sizeof(type), &size), "Read registration token elevation");
+        if (type == TokenElevationTypeFull) {
+            TOKEN_LINKED_TOKEN linked{};
+            check(GetTokenInformation(token.get(), TokenLinkedToken, &linked, sizeof(linked), &size), "Get user state token");
+            Handle desktopToken(linked.LinkedToken);
+            check(ImpersonateLoggedOnUser(desktopToken.get()), "Use desktop permissions for user state");
+            m_impersonating = true;
+        }
+    }
+    ~UserStateScope()
+    {
+        if (m_impersonating) {
+            RevertToSelf();
+        }
+    }
+
+private:
+    bool m_impersonating = false;
+};
+
+using WindowsDesktop::stateKey;
+
+std::array<std::wstring, 3> desktopRegistryKeys()
+{
+    return {std::wstring(L"Software\\Classes\\AppUserModelId\\") + WindowsDesktop::appId,
+            std::wstring(L"Software\\Classes\\CLSID\\") + WindowsDesktop::activatorId,
+            std::wstring(L"Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\") + WindowsDesktop::appId};
+}
+
+std::array<std::filesystem::path, 6> desktopFiles()
+{
+    const auto config = userFolder(FOLDERID_LocalAppData) / L"kdeconnect";
+    return {userFolder(FOLDERID_Programs) / WindowsDesktop::legacyShortcutName,
+            config / L"background.log",
+            config / L"background.log.1",
+            config / L"background-status.json",
+            config / L"transfer-notifications.log",
+            config / L"transfer-notifications.log.1"};
+}
+
+void removeFile(const std::filesystem::path &path)
+{
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        const DWORD writable = attributes & ~FILE_ATTRIBUTE_READONLY;
+        check(SetFileAttributesW(path.c_str(), writable ? writable : FILE_ATTRIBUTE_NORMAL), "Clear desktop state file attributes");
+    }
+    if (!DeleteFileW(path.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) {
+        check(FALSE, "Remove desktop state file");
+    }
+}
+
+void removeEmptyDirectory(const std::filesystem::path &path)
+{
+    if (!RemoveDirectoryW(path.c_str())) {
+        const auto error = GetLastError();
+        if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND && error != ERROR_DIR_NOT_EMPTY) {
+            throw std::system_error(error, std::system_category(), "Remove empty service directory");
+        }
+    }
+}
+
+void saveDesktopState(bool legacyService, bool registering)
+{
+    UserStateScope scope;
+    HKEY raw = nullptr;
+    checkRegistry(RegOpenCurrentUser(KEY_ALL_ACCESS, &raw), "Open registration user registry");
+    RegistryHandle user(raw);
+    auto state = openKey(user.get(), stateKey);
+    if (state) {
+        if (readDword(state.get(), L"Version") != 1) {
+            throw std::runtime_error("Unsupported background service desktop state version");
+        }
+        if (readDword(state.get(), L"Complete") == 1) {
+            if (registering && (readDword(state.get(), L"Restored") == 1 || readDword(state.get(), L"Removing") == 1)) {
+                throw std::runtime_error("Previous service removal cleanup is incomplete; run --service-unregister before registering again");
+            }
+            return;
+        }
+    }
+    const auto config = userFolder(FOLDERID_LocalAppData) / L"kdeconnect";
+    const auto backup = config / L"service-state";
+    const bool createdConfig = !std::filesystem::exists(config) || (state && readDword(state.get(), L"ConfigDirectoryCreated") == 1);
+    if (std::filesystem::exists(backup) && (!state || readDword(state.get(), L"Version") != 1)) {
+        throw std::runtime_error("Refusing to overwrite an unrelated service-state directory");
+    }
+    state.reset();
+    deleteKey(user.get(), stateKey);
+    state = openKey(user.get(), stateKey, true);
+    writeDword(state.get(), L"Version", 1);
+    writeDword(state.get(), L"Legacy", legacyService);
+    writeDword(state.get(), L"ConfigDirectoryCreated", createdConfig);
+    std::filesystem::create_directories(backup);
+    const auto keys = desktopRegistryKeys();
+    for (size_t index = 0; index < keys.size(); ++index) {
+        auto original = legacyService ? RegistryHandle{} : openKey(user.get(), keys[index]);
+        writeDword(state.get(), L"RegistryPresent" + std::to_wstring(index), bool(original));
+        if (original) {
+            auto destination = openKey(state.get(), L"Registry" + std::to_wstring(index), true);
+            checkRegistry(RegCopyTreeW(original.get(), nullptr, destination.get()), "Save notification registry state");
+        }
+    }
+    const auto files = desktopFiles();
+    for (size_t index = 0; index < files.size(); ++index) {
+        const DWORD attributes = legacyService ? INVALID_FILE_ATTRIBUTES : GetFileAttributesW(files[index].c_str());
+        if (!legacyService && attributes == INVALID_FILE_ATTRIBUTES && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) {
+            check(FALSE, "Read original desktop state file attributes");
+        }
+        if (attributes != INVALID_FILE_ATTRIBUTES) {
+            if (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) {
+                throw std::runtime_error("Desktop state files must not be directories or reparse points");
+            }
+            std::filesystem::copy_file(files[index], backup / std::to_wstring(index), std::filesystem::copy_options::overwrite_existing);
+        }
+        writeDword(state.get(), L"File" + std::to_wstring(index), attributes);
+    }
+    writeDword(state.get(), L"Complete", 1);
+}
+
+void clearServiceNotifications(HKEY user, bool legacy)
+{
+    auto identity = openKey(user, desktopRegistryKeys()[0]);
+    DWORD valueSize = 0;
+    if (!identity || RegGetValueW(identity.get(), nullptr, L"CustomActivator", RRF_RT_REG_SZ, nullptr, nullptr, &valueSize) != ERROR_SUCCESS) {
+        return;
+    }
+#ifdef _MSC_VER
+    const HRESULT initialized = RoInitialize(RO_INIT_SINGLETHREADED);
+    if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE) {
+        throw std::system_error(initialized, std::system_category(), "Initialize notification history cleanup");
+    }
+    struct Apartment {
+        bool owned;
+        ~Apartment()
+        {
+            if (owned) {
+                RoUninitialize();
+            }
+        }
+    } apartment{SUCCEEDED(initialized)};
+    try {
+        const auto history = winrt::Windows::UI::Notifications::ToastNotificationManager::History();
+        history.RemoveGroup(WindowsDesktop::serviceGroup, WindowsDesktop::appId);
+        if (legacy) {
+            history.RemoveGroup(WindowsDesktop::interactiveGroup, WindowsDesktop::appId);
+        }
+    } catch (const winrt::hresult_error &error) {
+        if (error.code() != HRESULT_FROM_WIN32(ERROR_NOT_FOUND)) {
+            throw std::system_error(error.code().value, std::system_category(), "Clear service notification history");
+        }
+    }
+#else
+    // MinGW is used for the container's compile check; Windows packages use the SDK implementation above.
+    (void)legacy;
+#endif
+}
+
+void restoreDesktopState(bool legacyService)
+{
+    UserStateScope scope;
+    HKEY raw = nullptr;
+    checkRegistry(RegOpenCurrentUser(KEY_ALL_ACCESS, &raw), "Open removal user registry");
+    RegistryHandle user(raw);
+    auto state = openKey(user.get(), stateKey, false, KEY_READ | KEY_WRITE);
+    if (state && readDword(state.get(), L"Version") != 1) {
+        throw std::runtime_error("Unsupported background service desktop state version");
+    }
+    const bool saved = state && readDword(state.get(), L"Complete") == 1;
+    const auto files = desktopFiles();
+    WindowsDesktop::removeLegacyNotificationShortcut(files[0]);
+    if (!state && !legacyService) {
+        return;
+    }
+    const auto config = userFolder(FOLDERID_LocalAppData) / L"kdeconnect";
+    const auto backup = config / L"service-state";
+    if ((saved || legacyService) && (!state || readDword(state.get(), L"Restored") != 1)) {
+        const auto keys = desktopRegistryKeys();
+        if (saved) {
+            for (size_t index = 0; index < keys.size(); ++index) {
+                if (readDword(state.get(), L"RegistryPresent" + std::to_wstring(index)) == 1 && !openKey(state.get(), L"Registry" + std::to_wstring(index))) {
+                    throw std::runtime_error("A notification registry backup is missing; desktop state was not restored");
+                }
+            }
+            for (size_t index = 0; index < files.size(); ++index) {
+                if (readDword(state.get(), L"File" + std::to_wstring(index), INVALID_FILE_ATTRIBUTES) != INVALID_FILE_ATTRIBUTES) {
+                    const DWORD attributes = GetFileAttributesW((backup / std::to_wstring(index)).c_str());
+                    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) {
+                        throw std::runtime_error("A desktop state file backup is missing or invalid; desktop state was not restored");
+                    }
+                }
+            }
+        }
+        clearServiceNotifications(user.get(), saved ? readDword(state.get(), L"Legacy") == 1 : legacyService);
+        for (size_t index = 0; index < keys.size(); ++index) {
+            deleteKey(user.get(), keys[index]);
+            if (saved) {
+                if (auto original = openKey(state.get(), L"Registry" + std::to_wstring(index))) {
+                    auto destination = openKey(user.get(), keys[index], true);
+                    checkRegistry(RegCopyTreeW(original.get(), nullptr, destination.get()), "Restore notification registry state");
+                }
+            }
+        }
+        for (size_t index = 0; index < files.size(); ++index) {
+            const auto original = backup / std::to_wstring(index);
+            const DWORD attributes = saved ? readDword(state.get(), L"File" + std::to_wstring(index), INVALID_FILE_ATTRIBUTES) : INVALID_FILE_ATTRIBUTES;
+            if (index == 0) {
+                if (attributes == INVALID_FILE_ATTRIBUTES || WindowsDesktop::isLegacyNotificationShortcut(original) || std::filesystem::exists(files[index])) {
+                    continue;
+                }
+            }
+            removeFile(files[index]);
+            if (attributes != INVALID_FILE_ATTRIBUTES) {
+                std::filesystem::create_directories(files[index].parent_path());
+                std::filesystem::copy_file(original, files[index]);
+                check(SetFileAttributesW(files[index].c_str(), attributes), "Restore desktop state file attributes");
+            }
+        }
+        if (state) {
+            writeDword(state.get(), L"Restored", 1);
+        }
+    }
+    if (state) {
+        const bool removeConfig = readDword(state.get(), L"ConfigDirectoryCreated") == 1;
+        for (size_t index = 0; index < files.size(); ++index) {
+            removeFile(backup / std::to_wstring(index));
+        }
+        removeEmptyDirectory(backup);
+        if (removeConfig) {
+            removeEmptyDirectory(config);
+        }
+        state.reset();
+        deleteKey(user.get(), stateKey);
+    }
+}
+
+void removeHostFiles(const std::wstring &sid)
+{
+    const auto directory = hostDirectory(sid, false);
+    for (const auto *name : {L"kdeconnect-service.exe", L"kdeconnect-service.exe.new", L"service.log", L"service.log.1"}) {
+        removeFile(directory / name);
+    }
+    removeEmptyDirectory(directory);
+    removeEmptyDirectory(directory.parent_path());
+}
+
 void configureService(bool install)
 {
     if (!IsUserAnAdmin()) {
@@ -315,6 +643,19 @@ void configureService(bool install)
     if (!service && GetLastError() != ERROR_SERVICE_DOES_NOT_EXIST) {
         check(FALSE, "Open background service");
     }
+    const bool hadService = bool(service);
+    if (install || hadService) {
+        saveDesktopState(hadService, install);
+    }
+    if (!install) {
+        UserStateScope scope;
+        HKEY raw = nullptr;
+        checkRegistry(RegOpenCurrentUser(KEY_ALL_ACCESS, &raw), "Open removal user registry");
+        RegistryHandle user(raw);
+        if (auto state = openKey(user.get(), stateKey, false, KEY_READ | KEY_WRITE)) {
+            writeDword(state.get(), L"Removing", 1);
+        }
+    }
     if (service) {
         stopService(service.get());
     }
@@ -323,11 +664,9 @@ void configureService(bool install)
             check(DeleteService(service.get()), "Delete service");
             service.reset();
         }
-        const auto directory = hostDirectory(sid, false);
-        // Delete only the host files, never the user's pairing data or installation.
-        DeleteFileW((directory / L"kdeconnect-service.exe").c_str());
-        DeleteFileW((directory / L"kdeconnect-service.exe.new").c_str());
-        std::wcout << L"Background service removed. User configuration and pairing data were retained.\n";
+        removeHostFiles(sid);
+        restoreDesktopState(hadService);
+        std::wcout << L"Background service and its desktop integration removed. User configuration and pairing data were retained.\n";
         return;
     }
 

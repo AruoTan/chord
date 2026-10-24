@@ -4,7 +4,9 @@
 
 #include "core/compositefiletransferjob.h"
 #include "core/kdeconnectconfig.h"
+#include "core/windowsservice.h"
 #include "transfernotificationtracker.h"
+#include "windowsservice/desktopintegration.h"
 
 #include <KIO/JobTracker>
 #include <QCoreApplication>
@@ -19,12 +21,11 @@
 #include <QStandardPaths>
 #include <QXmlStreamWriter>
 #include <chrono>
+#include <exception>
 #include <memory>
 
 #include <notificationactivationcallback.h>
-#include <propkey.h>
-#include <propvarutil.h>
-#include <shlobj.h>
+#include <shobjidl.h>
 #include <windows.h>
 #include <wrl.h>
 
@@ -35,14 +36,12 @@
 namespace
 {
 using namespace winrt::Windows::UI::Notifications;
-using Microsoft::WRL::ComPtr;
 using Microsoft::WRL::Make;
 using Microsoft::WRL::RuntimeClass;
 using Microsoft::WRL::RuntimeClassFlags;
 
-constexpr wchar_t appId[] = L"org.kde.kdeconnect.transfers";
-constexpr wchar_t group[] = L"receiving";
-constexpr wchar_t activatorId[] = L"{5FA5D3F1-182B-49FD-A313-C06C5336CC70}";
+using WindowsDesktop::activatorId;
+using WindowsDesktop::appId;
 
 void logNotification(const QString &message)
 {
@@ -122,6 +121,7 @@ class WindowsTransferNotifications
 {
 public:
     WindowsTransferNotifications()
+        : m_group(WindowsService::registeredForCurrentUser() ? WindowsDesktop::serviceGroup : WindowsDesktop::interactiveGroup)
     {
         logNotification(QStringLiteral("Starting notification backend: %1").arg(QCoreApplication::applicationFilePath()));
         ensureReady();
@@ -155,7 +155,7 @@ public:
             if (!replace) {
                 m_stage = QStringLiteral("Update notification");
                 // A dismissed notification stays dismissed until the final result.
-                if (m_notifier.Update(data, tag, group) == NotificationUpdateResult::Failed) {
+                if (m_notifier.Update(data, tag, m_group) == NotificationUpdateResult::Failed) {
                     logNotification(QStringLiteral("Update failed: tag=%1").arg(notification.tag));
                     m_retryTimer.start();
                     return false;
@@ -187,7 +187,7 @@ public:
             document.LoadXml(hstring(xml));
             ToastNotification toast(document);
             toast.Tag(tag);
-            toast.Group(group);
+            toast.Group(m_group);
             toast.Data(data);
             toast.ExpirationTime(winrt::clock::now() + std::chrono::hours(24));
             toast.Failed([tag = notification.tag](const ToastNotification &, const ToastFailedEventArgs &args) {
@@ -291,35 +291,7 @@ private:
         m_stage = QStringLiteral("Register COM class factory");
         winrt::check_hresult(CoRegisterClassObject(clsid, factory.Get(), CLSCTX_LOCAL_SERVER, REGCLS_MULTIPLEUSE, &m_cookie));
 
-        m_stage = QStringLiteral("Create notification shortcut");
         const QString executable = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
-        const QString programs = QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation);
-        if (programs.isEmpty() || !QDir().mkpath(programs)) {
-            winrt::throw_hresult(E_ACCESSDENIED);
-        }
-        ComPtr<IShellLinkW> shortcut;
-        winrt::check_hresult(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&shortcut)));
-        winrt::check_hresult(shortcut->SetPath(executable.toStdWString().c_str()));
-        winrt::check_hresult(shortcut->SetArguments(L"--background"));
-        winrt::check_hresult(shortcut->SetDescription(L"KDE Connect file transfer notifications"));
-        winrt::check_hresult(shortcut->SetIconLocation(executable.toStdWString().c_str(), 0));
-        ComPtr<IPropertyStore> properties;
-        winrt::check_hresult(shortcut.As(&properties));
-        PROPVARIANT value;
-        winrt::check_hresult(InitPropVariantFromString(appId, &value));
-        const HRESULT appIdResult = properties->SetValue(PKEY_AppUserModel_ID, value);
-        PropVariantClear(&value);
-        winrt::check_hresult(appIdResult);
-        winrt::check_hresult(InitPropVariantFromCLSID(clsid, &value));
-        const HRESULT activatorResult = properties->SetValue(PKEY_AppUserModel_ToastActivatorCLSID, value);
-        PropVariantClear(&value);
-        winrt::check_hresult(activatorResult);
-        winrt::check_hresult(properties->Commit());
-        ComPtr<IPersistFile> file;
-        winrt::check_hresult(shortcut.As(&file));
-        const QString link = QDir::toNativeSeparators(programs + QStringLiteral("/KDE Connect Transfers.lnk"));
-        winrt::check_hresult(file->Save(link.toStdWString().c_str(), TRUE));
-
         m_stage = QStringLiteral("Register COM server");
         QSettings server(QStringLiteral("HKEY_CURRENT_USER\\Software\\Classes\\CLSID\\") + QString::fromWCharArray(activatorId)
                              + QStringLiteral("\\LocalServer32"),
@@ -340,10 +312,22 @@ private:
         winrt::check_hresult(SetCurrentProcessExplicitAppUserModelID(appId));
         m_stage = QStringLiteral("CreateToastNotifier");
         m_notifier = ToastNotificationManager::CreateToastNotifier(appId);
+        try {
+            const QString programs = QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation);
+            if (!programs.isEmpty()) {
+                const auto link = std::filesystem::path(QDir(programs).filePath(QString::fromWCharArray(WindowsDesktop::legacyShortcutName)).toStdWString());
+                if (WindowsDesktop::removeLegacyNotificationShortcut(link)) {
+                    logNotification(QStringLiteral("Removed legacy transfer notification shortcut"));
+                }
+            }
+        } catch (const std::exception &error) {
+            logNotification(QStringLiteral("Legacy shortcut cleanup failed: %1").arg(QString::fromLocal8Bit(error.what())));
+        }
     }
 
     ToastNotifier m_notifier{nullptr};
     ToastNotification m_lastToast{nullptr};
+    winrt::hstring m_group;
     DWORD m_cookie = 0;
     bool m_uninitialize = false;
     int m_lastSetting = -1;
