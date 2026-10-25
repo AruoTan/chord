@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: CC0-1.0
 
-"""Adapt Craft's executable allowlist and NSIS startup shortcut for this fork."""
+"""Adapt Craft's executable allowlist and disable tray autostart for this fork."""
 
 import ast
 import os
@@ -14,7 +14,7 @@ def configure(path):
     original_filter = "kdeconnect-cli|kdeconnectd|"
     service_filter = "kdeconnect-cli|kdeconnect-service|kdeconnectd|"
     original_startup = r'CreateShortCut "$SMPROGRAMS\\Startup\\@{productname}.lnk" "$INSTDIR\\bin\\@{appname}.exe"'
-    removed_startup = r'Delete "$SMPROGRAMS\\Startup\\@{productname}.lnk"'
+    disabled_startup = '; Tray autostart is disabled; use --service-register.'
     if service_filter not in source:
         if source.count(original_filter) != 1:
             raise RuntimeError("Craft's executable allowlist changed; review the KDE Connect blueprint")
@@ -22,8 +22,8 @@ def configure(path):
     if original_startup in source:
         if source.count(original_startup) != 1:
             raise RuntimeError("Craft's startup shortcut changed; review the KDE Connect blueprint")
-        source = source.replace(original_startup, removed_startup)
-    elif not source.startswith(marker):
+        source = source.replace(original_startup, disabled_startup)
+    elif not source.startswith(marker) or source.count(disabled_startup) != 1:
         raise RuntimeError("Craft's startup shortcut is missing; review the KDE Connect blueprint")
     if not source.startswith(marker):
         source = marker + source

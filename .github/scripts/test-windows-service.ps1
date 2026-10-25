@@ -24,20 +24,17 @@ $hostDirectory = Join-Path (Join-Path $env:ProgramFiles 'KDE Connect Background'
 $configDirectory = Join-Path $env:LOCALAPPDATA 'kdeconnect'
 $stateDirectory = Join-Path $configDirectory 'service-state'
 $stateFile = Join-Path $stateDirectory 'state.bin'
-$legacyStateSubKey = 'Software\KDEConnectBackgroundServiceState'
-$legacyStateKey = "HKCU:\$legacyStateSubKey"
 $notificationKeys = @(
     'HKCU:\Software\Classes\AppUserModelId\org.kde.kdeconnect.transfers',
     'HKCU:\Software\Classes\CLSID\{5FA5D3F1-182B-49FD-A313-C06C5336CC70}',
     'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\org.kde.kdeconnect.transfers'
 )
 $desktopFiles = @(
-    (Join-Path ([Environment]::GetFolderPath('Programs')) 'KDE Connect Transfers.lnk'),
     "$configDirectory/background.log", "$configDirectory/background.log.1",
     "$configDirectory/background-status.json", "$configDirectory/transfer-notifications.log",
     "$configDirectory/transfer-notifications.log.1"
 )
-foreach ($path in @($notificationKeys) + @($desktopFiles) + @($legacyStateKey, $stateDirectory, $hostDirectory)) {
+foreach ($path in @($notificationKeys) + @($desktopFiles) + @($stateDirectory, $hostDirectory)) {
     if (Test-Path $path) { throw "Refusing to overwrite existing desktop integration during tests: $path" }
 }
 $sentinel = Join-Path $configDirectory 'service-test-user-data.keep'
@@ -66,7 +63,7 @@ function Configure([string]$Operation) {
 }
 function Get-StateFlags {
     $bytes = [IO.File]::ReadAllBytes($stateFile)
-    if ($bytes.Length -lt 52 -or [Text.Encoding]::ASCII.GetString($bytes, 0, 8) -ne 'KDCSTATE' -or [BitConverter]::ToUInt32($bytes, 8) -ne 2) {
+    if ($bytes.Length -lt 48 -or [Text.Encoding]::ASCII.GetString($bytes, 0, 8) -ne 'KDCSTATE' -or [BitConverter]::ToUInt32($bytes, 8) -ne 3) {
         throw 'Invalid service state file header'
     }
     return [BitConverter]::ToUInt32($bytes, 12)
@@ -114,17 +111,11 @@ function Set-DesktopArtifacts([string]$Value) {
     New-ItemProperty "$($notificationKeys[0])\Nested" -Name 'Number' -Value $number -PropertyType DWord -Force | Out-Null
     foreach ($path in $desktopFiles) {
         if (Test-Path $path) { [IO.File]::SetAttributes($path, [IO.FileAttributes]::Normal) }
-        if ($path -eq $desktopFiles[0]) {
-            $appId = if ($Value -eq 'original desktop state') { 'org.kde.kdeconnect.test-user' } else { 'org.kde.kdeconnect.transfers' }
-            & "$fixture/kdeconnectd.exe" '--create-shortcut' $path $appId
-            if ($LASTEXITCODE) { throw 'Failed to create shortcut fixture' }
-        } else {
-            [IO.File]::WriteAllText($path, $Value)
-        }
+        [IO.File]::WriteAllText($path, $Value)
     }
 }
 function Assert-DesktopAbsent {
-    foreach ($path in @($notificationKeys) + @($desktopFiles) + @($legacyStateKey, $stateDirectory, $hostDirectory)) {
+    foreach ($path in @($notificationKeys) + @($desktopFiles) + @($stateDirectory, $hostDirectory)) {
         Assert (-not (Test-Path $path)) "Service-created state removed: $path"
     }
     Assert (Test-Path $sentinel) 'User data is retained.'
@@ -140,10 +131,6 @@ try {
     Assert ((Get-StateFlags) -band 1) 'Registration records a complete file-based desktop snapshot.'
     $stateOwner = (Get-Acl $stateFile).GetOwner([Security.Principal.SecurityIdentifier])
     Assert ($stateOwner.Value -eq $identity.User.Value) 'The restricted user owns the recovery snapshot.'
-    Assert (-not (Test-Path $legacyStateKey)) 'Registration does not create a custom registry state key.'
-    Set-DesktopArtifacts 'created by service'
-    & "$fixture/kdeconnectd.exe" '--remove-legacy-shortcut' $desktopFiles[0]
-    Assert ($LASTEXITCODE -eq 0 -and -not (Test-Path $desktopFiles[0])) 'Migration removes the obsolete notification shortcut.'
     Set-DesktopArtifacts 'created by service'
     $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
     Assert ($service.StartMode -eq 'Auto' -and $service.StartName -eq 'LocalSystem') 'Supervisor is an automatic Windows service.'
@@ -201,21 +188,36 @@ try {
 
     Configure '--register'
     $validSnapshot = [IO.File]::ReadAllBytes($stateFile)
-    try {
-        [IO.File]::WriteAllBytes($stateFile, [byte[]]@(0, 1, 2))
-        $failure = & $helper '--unregister' 2>&1 | Out-String
-        Write-Host $failure.Trim()
-        Assert ($LASTEXITCODE -ne 0) 'A corrupt snapshot blocks removal before changing system state.'
-        Assert ((Get-CimInstance Win32_Service -Filter "Name='$serviceName'").State -eq 'Running') 'A corrupt snapshot does not stop or delete the service.'
-    } finally {
-        [IO.File]::WriteAllBytes($stateFile, $validSnapshot)
+    foreach ($invalidState in 'corrupt', 'unsupported', 'missing', 'incomplete') {
+        try {
+            switch ($invalidState) {
+                'corrupt' { [IO.File]::WriteAllBytes($stateFile, [byte[]]@(0, 1, 2)) }
+                'unsupported' {
+                    $bytes = [byte[]]$validSnapshot.Clone()
+                    [Array]::Copy([BitConverter]::GetBytes([uint32]2), 0, $bytes, 8, 4)
+                    [IO.File]::WriteAllBytes($stateFile, $bytes)
+                }
+                'missing' { Remove-Item $stateFile }
+                'incomplete' {
+                    $bytes = [byte[]]$validSnapshot.Clone()
+                    [Array]::Copy([BitConverter]::GetBytes([uint32]0), 0, $bytes, 12, 4)
+                    [IO.File]::WriteAllBytes($stateFile, $bytes)
+                }
+            }
+            foreach ($operation in '--register', '--unregister') {
+                $failure = & $helper $operation 2>&1 | Out-String
+                Write-Host $failure.Trim()
+                Assert ($LASTEXITCODE -ne 0) "A $invalidState snapshot blocks $operation."
+                Assert ((Get-CimInstance Win32_Service -Filter "Name='$serviceName'").State -eq 'Running') 'Invalid state does not stop or delete the service.'
+            }
+        } finally {
+            [IO.File]::WriteAllBytes($stateFile, $validSnapshot)
+        }
     }
     Configure '--unregister'
     Assert-DesktopAbsent
 
     Set-DesktopArtifacts 'original desktop state'
-    & "$fixture/kdeconnectd.exe" '--remove-legacy-shortcut' $desktopFiles[0]
-    Assert ($LASTEXITCODE -eq 0 -and (Test-Path $desktopFiles[0])) 'Migration preserves an unrelated shortcut with the same name.'
     [IO.File]::SetAttributes($desktopFiles[0], [IO.FileAttributes]::ReadOnly)
     $originalHashes = @($desktopFiles | ForEach-Object { (Get-FileHash $_ -Algorithm SHA256).Hash })
     $nestedKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
@@ -244,8 +246,8 @@ try {
         & $helper '--unregister'
         Assert ($LASTEXITCODE -ne 0) 'A cleanup failure is reported instead of claiming success.'
         Assert (Test-Path $stateFile) 'Failed cleanup retains its recovery metadata.'
-        Assert ((Get-StateFlags) -band 8) 'Cleanup keeps the daemon startup gate active until removal finishes.'
-        Assert ((Get-StateFlags) -band 16) 'A cleanup retry can skip already-restored desktop state.'
+        Assert ((Get-StateFlags) -band 4) 'Cleanup keeps the daemon startup gate active until removal finishes.'
+        Assert ((Get-StateFlags) -band 8) 'A cleanup retry can skip already-restored desktop state.'
         & $helper '--register'
         Assert ($LASTEXITCODE -ne 0) 'Registration waits for incomplete removal cleanup to finish.'
         Assert (-not (Get-CimInstance Win32_Service -Filter "Name='$serviceName'")) 'A rejected registration does not create a new service.'
@@ -281,60 +283,13 @@ try {
     }
     Assert (-not (Test-Path "$($notificationKeys[0])\ServiceOnly")) 'Restoration removes service-created subkey trees.'
     for ($index = 0; $index -lt $desktopFiles.Count; $index++) {
-        Assert ((Get-FileHash $desktopFiles[$index] -Algorithm SHA256).Hash -eq $originalHashes[$index]) 'Pre-existing shortcut and log contents are restored.'
+        Assert ((Get-FileHash $desktopFiles[$index] -Algorithm SHA256).Hash -eq $originalHashes[$index]) 'Pre-existing runtime file contents are restored.'
     }
     Assert (([IO.File]::GetAttributes($desktopFiles[0]) -band [IO.FileAttributes]::ReadOnly) -ne 0) 'Original file attributes are restored.'
     Configure '--unregister'
     Assert ((Get-ItemPropertyValue $notificationKeys[0] -Name 'ServiceTestValue') -eq 'original desktop state') 'Repeated removal does not delete restored pre-existing state.'
     foreach ($path in $desktopFiles) { Remove-Item $path -Force }
     foreach ($key in $notificationKeys) { Remove-Item $key -Recurse -Force }
-
-    Configure '--register'
-    Set-DesktopArtifacts 'changed by a registry-state service'
-    $legacy = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($legacyStateSubKey)
-    try {
-        foreach ($entry in @{ Version=1; Complete=1; Legacy=0; ConfigDirectoryCreated=0; Removing=0; Restored=0 }.GetEnumerator()) {
-            $legacy.SetValue($entry.Key, [int]$entry.Value, [Microsoft.Win32.RegistryValueKind]::DWord)
-        }
-        for ($index = 0; $index -lt $desktopFiles.Count; $index++) {
-            $legacy.SetValue("File$index", -1, [Microsoft.Win32.RegistryValueKind]::DWord)
-        }
-        for ($index = 0; $index -lt $notificationKeys.Count; $index++) {
-            $legacy.SetValue("RegistryPresent$index", [int]($index -eq 0), [Microsoft.Win32.RegistryValueKind]::DWord)
-        }
-        $original = $legacy.CreateSubKey('Registry0')
-        try {
-            $original.SetValue('ServiceTestValue', 'migrated original state', [Microsoft.Win32.RegistryValueKind]::String)
-            $nested = $original.CreateSubKey('Nested')
-            try { $nested.SetValue('Number', 42, [Microsoft.Win32.RegistryValueKind]::DWord) } finally { $nested.Dispose() }
-        } finally { $original.Dispose() }
-    } finally { $legacy.Dispose() }
-    Remove-Item $stateFile
-    Configure '--register'
-    Assert ((Get-StateFlags) -band 1) 'Legacy registry state migrates to a complete file snapshot.'
-    Assert (-not (Test-Path $legacyStateKey)) 'Migration removes the old custom registry state key.'
-    Save-ServiceLog
-    Configure '--unregister'
-    Assert ((Get-ItemPropertyValue $notificationKeys[0] -Name 'ServiceTestValue') -eq 'migrated original state') 'Unregister restores the migrated original registry values.'
-    Assert ((Get-ItemPropertyValue "$($notificationKeys[0])\Nested" -Name 'Number') -eq 42) 'Migration preserves nested registry data.'
-    Remove-Item $notificationKeys[0] -Recurse -Force
-    Assert-DesktopAbsent
-
-    Configure '--register'
-    Set-DesktopArtifacts 'legacy service state'
-    # Older installed services did not record ownership or original desktop state.
-    Remove-Item $stateDirectory -Recurse -Force
-    Save-ServiceLog
-    Configure '--unregister'
-    Assert-DesktopAbsent
-
-    & "$fixture/kdeconnectd.exe" '--create-shortcut' $desktopFiles[0] 'org.kde.kdeconnect.transfers'
-    if ($LASTEXITCODE) { throw 'Failed to create legacy shortcut fixture' }
-    Configure '--register'
-    & "$fixture/kdeconnectd.exe" '--remove-legacy-shortcut' $desktopFiles[0]
-    Assert ($LASTEXITCODE -eq 0 -and -not (Test-Path $desktopFiles[0])) 'Migration removes an obsolete shortcut saved before registration.'
-    Save-ServiceLog
-    Configure '--unregister'
     Assert-DesktopAbsent
 } catch {
     $testFailure = $_

@@ -4,17 +4,10 @@
 
 #pragma once
 
-#include <filesystem>
-
 namespace WindowsDesktop
 {
 inline constexpr wchar_t appId[] = L"org.kde.kdeconnect.transfers";
 inline constexpr wchar_t activatorId[] = L"{5FA5D3F1-182B-49FD-A313-C06C5336CC70}";
-inline constexpr wchar_t legacyShortcutName[] = L"KDE Connect Transfers.lnk";
 inline constexpr wchar_t serviceGroup[] = L"receiving-service";
 inline constexpr wchar_t interactiveGroup[] = L"receiving";
-inline constexpr wchar_t legacyStateKey[] = L"Software\\KDEConnectBackgroundServiceState";
-
-bool isLegacyNotificationShortcut(const std::filesystem::path &path);
-bool removeLegacyNotificationShortcut(const std::filesystem::path &path);
 }

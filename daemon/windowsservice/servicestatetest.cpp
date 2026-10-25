@@ -45,11 +45,11 @@ int main()
 {
     try {
         ServiceState::Snapshot snapshot;
-        require(ServiceState::encode(snapshot).size() == 52, "Unexpected empty snapshot size");
+        require(ServiceState::encode(snapshot).size() == 48, "Unexpected empty snapshot size");
         require(ServiceState::decode(ServiceState::encode(snapshot)) == snapshot, "Empty snapshot round trip failed");
         snapshot.flags = ServiceState::Complete | ServiceState::ConfigCreated | ServiceState::Removing | ServiceState::Restored;
         snapshot.attributes[0] = 1;
-        snapshot.attributes[5] = 128;
+        snapshot.attributes[4] = 128;
         ServiceState::RegistryTree root;
         root.values = {{u"", 1, text(u"Original name")},
                        {u"Expand", 2, text(u"%TEMP%\\original")},
@@ -75,6 +75,11 @@ int main()
         header.format = 99;
         require(ServiceState::blocksStartup(header), "An unsupported state format did not block daemon startup");
         header.format = ServiceState::version;
+        auto unsupported = encoded;
+        unsupported[8] = 2;
+        rejects([&] {
+            ServiceState::decode(unsupported);
+        });
         for (std::size_t size = 0; size < encoded.size(); ++size) {
             rejects([&] {
                 ServiceState::decode(std::span(encoded).first(size));
@@ -96,7 +101,7 @@ int main()
         rejects([&] {
             ServiceState::decode(invalid);
         });
-        for (auto offset : {0, 8, 15, 40}) {
+        for (auto offset : {0, 8, 15, 36}) {
             invalid = encoded;
             invalid[offset] = 0xff;
             rejects([&] {
@@ -104,7 +109,7 @@ int main()
             });
         }
         invalid = encoded;
-        invalid[44] = invalid[45] = invalid[46] = invalid[47] = 0xff;
+        invalid[40] = invalid[41] = invalid[42] = invalid[43] = 0xff;
         rejects([&] {
             ServiceState::decode(invalid);
         });

@@ -4,14 +4,7 @@
 
 #include <windows.h>
 
-#include <propsys.h>
-
-#include <propkey.h>
-#include <propvarutil.h>
 #include <sddl.h>
-#include <shlobj.h>
-
-#include "desktopintegration.h"
 
 #include <filesystem>
 #include <fstream>
@@ -20,50 +13,6 @@
 
 int wmain(int argc, wchar_t **argv)
 {
-    if (argc == 3 && std::wstring(argv[1]) == L"--remove-legacy-shortcut") {
-        WindowsDesktop::removeLegacyNotificationShortcut(argv[2]);
-        return 0;
-    }
-    if (argc == 4 && std::wstring(argv[1]) == L"--create-shortcut") {
-        const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-        if (FAILED(initialized)) {
-            return 10;
-        }
-        IShellLinkW *link = nullptr;
-        HRESULT result = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW, reinterpret_cast<void **>(&link));
-        if (SUCCEEDED(result)) {
-            wchar_t executable[32768]{};
-            GetModuleFileNameW(nullptr, executable, 32768);
-            result = link->SetPath(executable);
-            IPropertyStore *properties = nullptr;
-            if (SUCCEEDED(result)) {
-                result = link->QueryInterface(IID_IPropertyStore, reinterpret_cast<void **>(&properties));
-            }
-            if (SUCCEEDED(result)) {
-                PROPVARIANT value{};
-                result = InitPropVariantFromString(argv[3], &value);
-                if (SUCCEEDED(result)) {
-                    result = properties->SetValue(PKEY_AppUserModel_ID, value);
-                }
-                PropVariantClear(&value);
-                if (SUCCEEDED(result)) {
-                    result = properties->Commit();
-                }
-                properties->Release();
-            }
-            IPersistFile *file = nullptr;
-            if (SUCCEEDED(result)) {
-                result = link->QueryInterface(IID_IPersistFile, reinterpret_cast<void **>(&file));
-            }
-            if (SUCCEEDED(result)) {
-                result = file->Save(argv[2], TRUE);
-                file->Release();
-            }
-            link->Release();
-        }
-        CoUninitialize();
-        return SUCCEEDED(result) ? 0 : 11;
-    }
     std::wstring heartbeatName;
     std::wstring stopName;
     bool background = false;

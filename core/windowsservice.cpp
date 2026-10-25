@@ -3,7 +3,6 @@
  */
 
 #include "windowsservice.h"
-#include "daemon/windowsservice/desktopintegration.h"
 #include "daemon/windowsservice/servicestate.h"
 
 #include <windows.h>
@@ -61,13 +60,7 @@ bool WindowsService::removalInProgressForCurrentUser()
         return !read || ServiceState::blocksStartup(header);
     }
     const DWORD error = GetLastError();
-    if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
-        return true;
-    }
-    DWORD removing = 0;
-    DWORD bytes = sizeof(removing);
-    const auto result = RegGetValueW(HKEY_CURRENT_USER, WindowsDesktop::legacyStateKey, L"Removing", RRF_RT_REG_DWORD, nullptr, &removing, &bytes);
-    return (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND && result != ERROR_PATH_NOT_FOUND) || (result == ERROR_SUCCESS && removing == 1);
+    return error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND;
 }
 
 int WindowsService::configure(bool install)

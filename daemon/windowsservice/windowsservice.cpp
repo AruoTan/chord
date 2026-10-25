@@ -424,22 +424,10 @@ void restoreRegistry(const ServiceState::RegistryTree &original, HKEY current)
     }
 }
 
-DWORD readDword(HKEY key, const std::wstring &name, DWORD fallback = 0)
-{
-    DWORD value = 0;
-    DWORD size = sizeof(value);
-    const auto error = RegGetValueW(key, nullptr, name.c_str(), RRF_RT_REG_DWORD, nullptr, &value, &size);
-    if (error == ERROR_FILE_NOT_FOUND) {
-        return fallback;
-    }
-    checkRegistry(error, "Read desktop state metadata");
-    return value;
-}
-
-std::filesystem::path resolveUserFolder(REFKNOWNFOLDERID id)
+std::filesystem::path resolveLocalAppData()
 {
     PWSTR raw = nullptr;
-    const HRESULT result = SHGetKnownFolderPath(id, KF_FLAG_DONT_VERIFY, nullptr, &raw);
+    const HRESULT result = SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DONT_VERIFY, nullptr, &raw);
     if (FAILED(result)) {
         CoTaskMemFree(raw);
         throw std::system_error(result, std::system_category(), "Locate user desktop state directory");
@@ -449,11 +437,10 @@ std::filesystem::path resolveUserFolder(REFKNOWNFOLDERID id)
     return path;
 }
 
-const std::filesystem::path &userFolder(REFKNOWNFOLDERID id)
+const std::filesystem::path &userConfigDirectory()
 {
-    static const auto local = resolveUserFolder(FOLDERID_LocalAppData);
-    static const auto programs = resolveUserFolder(FOLDERID_Programs);
-    return IsEqualGUID(id, FOLDERID_LocalAppData) ? local : programs;
+    static const auto config = resolveLocalAppData() / L"kdeconnect";
+    return config;
 }
 
 class UserStateScope
@@ -468,7 +455,7 @@ public:
         HKEY user = nullptr;
         checkRegistry(RegOpenKeyExW(HKEY_USERS, sid.c_str(), 0, KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS, &user), "Open registered user hive by SID");
         m_user.reset(user);
-        userFolder(FOLDERID_LocalAppData);
+        userConfigDirectory();
         // A linked UAC token can be identification-only. Restrict our own primary token instead.
         HANDLE restrictedRaw = nullptr;
         check(CreateRestrictedToken(token.get(), LUA_TOKEN | DISABLE_MAX_PRIVILEGE, 0, nullptr, 0, nullptr, 0, nullptr, &restrictedRaw),
@@ -503,20 +490,17 @@ private:
     bool m_impersonating = false;
 };
 
-using WindowsDesktop::legacyStateKey;
-
-std::array<std::wstring, 3> desktopRegistryKeys()
+std::array<std::wstring, ServiceState::registryCount> desktopRegistryKeys()
 {
     return {std::wstring(L"Software\\Classes\\AppUserModelId\\") + WindowsDesktop::appId,
             std::wstring(L"Software\\Classes\\CLSID\\") + WindowsDesktop::activatorId,
             std::wstring(L"Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\") + WindowsDesktop::appId};
 }
 
-std::array<std::filesystem::path, 6> desktopFiles()
+std::array<std::filesystem::path, ServiceState::fileCount> desktopFiles()
 {
-    const auto config = userFolder(FOLDERID_LocalAppData) / L"kdeconnect";
-    return {userFolder(FOLDERID_Programs) / WindowsDesktop::legacyShortcutName,
-            config / L"background.log",
+    const auto &config = userConfigDirectory();
+    return {config / L"background.log",
             config / L"background.log.1",
             config / L"background-status.json",
             config / L"transfer-notifications.log",
@@ -547,7 +531,7 @@ void removeEmptyDirectory(const std::filesystem::path &path)
 
 std::filesystem::path stateDirectory()
 {
-    return userFolder(FOLDERID_LocalAppData) / L"kdeconnect" / ServiceState::directoryName;
+    return userConfigDirectory() / ServiceState::directoryName;
 }
 
 std::filesystem::path stateFile()
@@ -628,72 +612,33 @@ void writeSnapshot(const ServiceState::Snapshot &snapshot)
     }
 }
 
-std::optional<ServiceState::Snapshot> loadDesktopState(HKEY user)
+std::optional<ServiceState::Snapshot> loadDesktopState()
 {
-    auto legacy = openKey(user, legacyStateKey);
     if (regularStateFile(stateFile())) {
-        auto snapshot = readSnapshot(stateFile());
-        if (legacy) {
-            if (readDword(legacy.get(), L"Version") != 1) {
-                throw std::runtime_error("Refusing to remove an unsupported legacy service state key");
-            }
-            legacy.reset();
-            deleteKey(user, legacyStateKey);
+        return readSnapshot(stateFile());
+    }
+    const auto temporary = stateDirectory() / L"state.bin.new";
+    if (regularStateFile(temporary)) {
+        auto snapshot = readSnapshot(temporary);
+        if (snapshot.flags & ServiceState::Complete) {
+            throw std::runtime_error("An unpublished service snapshot needs recovery; do not overwrite it");
         }
+        writeSnapshot(snapshot);
         return snapshot;
     }
-    if (!legacy) {
-        const auto temporary = stateDirectory() / L"state.bin.new";
-        if (regularStateFile(temporary)) {
-            auto snapshot = readSnapshot(temporary);
-            if (snapshot.flags & ServiceState::Complete) {
-                throw std::runtime_error("An unpublished service snapshot needs recovery; do not overwrite it");
-            }
-            writeSnapshot(snapshot);
-            return snapshot;
-        }
-        if (std::filesystem::exists(stateDirectory()) && !std::filesystem::is_empty(stateDirectory())) {
-            throw std::runtime_error("Refusing to overwrite an unrelated service-state directory");
-        }
-        return {};
+    if (std::filesystem::exists(stateDirectory()) && !std::filesystem::is_empty(stateDirectory())) {
+        throw std::runtime_error("Refusing to overwrite an unrelated service-state directory");
     }
-    if (readDword(legacy.get(), L"Version") != 1) {
-        throw std::runtime_error("Unsupported legacy background service state version");
-    }
-    ServiceState::Snapshot snapshot;
-    for (const auto &[name, flag] : {std::pair{L"Complete", ServiceState::Complete},
-                                     std::pair{L"Legacy", ServiceState::Legacy},
-                                     std::pair{L"ConfigDirectoryCreated", ServiceState::ConfigCreated},
-                                     std::pair{L"Removing", ServiceState::Removing},
-                                     std::pair{L"Restored", ServiceState::Restored}}) {
-        if (readDword(legacy.get(), name) == 1) {
-            snapshot.flags |= flag;
-        }
-    }
-    for (size_t index = 0; index < snapshot.attributes.size(); ++index) {
-        snapshot.attributes[index] = readDword(legacy.get(), L"File" + std::to_wstring(index), INVALID_FILE_ATTRIBUTES);
-    }
-    if (snapshot.flags & ServiceState::Complete) {
-        for (size_t index = 0; index < snapshot.registry.size(); ++index) {
-            if (readDword(legacy.get(), L"RegistryPresent" + std::to_wstring(index)) == 1) {
-                auto original = openKey(legacy.get(), L"Registry" + std::to_wstring(index));
-                if (!original) {
-                    throw std::runtime_error("A legacy notification registry backup is missing");
-                }
-                snapshot.registry[index] = captureRegistry(original.get());
-            }
-        }
-    }
-    writeSnapshot(snapshot);
-    legacy.reset();
-    deleteKey(user, legacyStateKey);
-    return snapshot;
+    return {};
 }
 
-void saveDesktopState(bool legacyService, bool registering)
+void saveDesktopState(bool hasService, bool registering)
 {
     UserStateScope scope;
-    auto previous = loadDesktopState(scope.registry());
+    auto previous = loadDesktopState();
+    if (hasService && (!previous || !(previous->flags & ServiceState::Complete))) {
+        throw std::runtime_error("Existing service requires a complete recovery snapshot");
+    }
     if (previous && registering && (previous->flags & (ServiceState::Removing | ServiceState::Restored))) {
         throw std::runtime_error("Previous service removal cleanup is incomplete; run --service-unregister before registering again");
     }
@@ -701,9 +646,6 @@ void saveDesktopState(bool legacyService, bool registering)
         return;
     }
     ServiceState::Snapshot snapshot;
-    if (legacyService || (previous && (previous->flags & ServiceState::Legacy))) {
-        snapshot.flags |= ServiceState::Legacy;
-    }
     const auto config = stateDirectory().parent_path();
     if (!std::filesystem::exists(config) || (previous && (previous->flags & ServiceState::ConfigCreated))) {
         snapshot.flags |= ServiceState::ConfigCreated;
@@ -711,16 +653,15 @@ void saveDesktopState(bool legacyService, bool registering)
     writeSnapshot(snapshot);
     const auto keys = desktopRegistryKeys();
     for (size_t index = 0; index < keys.size(); ++index) {
-        auto original = (snapshot.flags & ServiceState::Legacy) ? RegistryHandle{} : openKey(scope.registry(), keys[index]);
+        auto original = openKey(scope.registry(), keys[index]);
         if (original) {
             snapshot.registry[index] = captureRegistry(original.get());
         }
     }
     const auto files = desktopFiles();
     for (size_t index = 0; index < files.size(); ++index) {
-        const DWORD attributes = (snapshot.flags & ServiceState::Legacy) ? INVALID_FILE_ATTRIBUTES : GetFileAttributesW(files[index].c_str());
-        if (!(snapshot.flags & ServiceState::Legacy) && attributes == INVALID_FILE_ATTRIBUTES && GetLastError() != ERROR_FILE_NOT_FOUND
-            && GetLastError() != ERROR_PATH_NOT_FOUND) {
+        const DWORD attributes = GetFileAttributesW(files[index].c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) {
             check(FALSE, "Read original desktop state file attributes");
         }
         if (attributes != INVALID_FILE_ATTRIBUTES) {
@@ -737,7 +678,7 @@ void saveDesktopState(bool legacyService, bool registering)
     writeSnapshot(snapshot);
 }
 
-void clearServiceNotifications(HKEY user, bool legacy)
+void clearServiceNotifications(HKEY user)
 {
     auto identity = openKey(user, desktopRegistryKeys()[0]);
     DWORD valueSize = 0;
@@ -761,26 +702,19 @@ void clearServiceNotifications(HKEY user, bool legacy)
     try {
         const auto history = winrt::Windows::UI::Notifications::ToastNotificationManager::History();
         history.RemoveGroup(WindowsDesktop::serviceGroup, WindowsDesktop::appId);
-        if (legacy) {
-            history.RemoveGroup(WindowsDesktop::interactiveGroup, WindowsDesktop::appId);
-        }
     } catch (const winrt::hresult_error &error) {
         if (error.code() != HRESULT_FROM_WIN32(ERROR_NOT_FOUND)) {
             throw std::system_error(error.code().value, std::system_category(), "Clear service notification history");
         }
     }
-#else
-    // MinGW is used for the container's compile check; Windows packages use the SDK implementation above.
-    (void)legacy;
 #endif
 }
 
 void restoreDesktopState()
 {
     UserStateScope scope;
-    auto state = loadDesktopState(scope.registry());
+    auto state = loadDesktopState();
     const auto files = desktopFiles();
-    WindowsDesktop::removeLegacyNotificationShortcut(files[0]);
     if (!state) {
         removeEmptyDirectory(stateDirectory());
         return;
@@ -796,7 +730,7 @@ void restoreDesktopState()
                 }
             }
         }
-        clearServiceNotifications(scope.registry(), state->flags & ServiceState::Legacy);
+        clearServiceNotifications(scope.registry());
         for (size_t index = 0; index < keys.size(); ++index) {
             const auto &original = state->registry[index];
             if (original) {
@@ -809,11 +743,6 @@ void restoreDesktopState()
         for (size_t index = 0; index < files.size(); ++index) {
             const auto original = backup / std::to_wstring(index);
             const DWORD attributes = state->attributes[index];
-            if (index == 0) {
-                if (attributes == INVALID_FILE_ATTRIBUTES || WindowsDesktop::isLegacyNotificationShortcut(original) || std::filesystem::exists(files[index])) {
-                    continue;
-                }
-            }
             removeFile(files[index]);
             if (attributes != INVALID_FILE_ATTRIBUTES) {
                 std::filesystem::create_directories(files[index].parent_path());
@@ -893,7 +822,7 @@ void configureService(bool install)
     }
     if (!install) {
         UserStateScope scope;
-        if (auto state = loadDesktopState(scope.registry())) {
+        if (auto state = loadDesktopState()) {
             state->flags |= ServiceState::Removing;
             writeSnapshot(*state);
         }

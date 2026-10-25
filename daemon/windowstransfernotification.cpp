@@ -18,10 +18,8 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QSettings>
-#include <QStandardPaths>
 #include <QXmlStreamWriter>
 #include <chrono>
-#include <exception>
 #include <memory>
 
 #include <notificationactivationcallback.h>
@@ -312,17 +310,6 @@ private:
         winrt::check_hresult(SetCurrentProcessExplicitAppUserModelID(appId));
         m_stage = QStringLiteral("CreateToastNotifier");
         m_notifier = ToastNotificationManager::CreateToastNotifier(appId);
-        try {
-            const QString programs = QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation);
-            if (!programs.isEmpty()) {
-                const auto link = std::filesystem::path(QDir(programs).filePath(QString::fromWCharArray(WindowsDesktop::legacyShortcutName)).toStdWString());
-                if (WindowsDesktop::removeLegacyNotificationShortcut(link)) {
-                    logNotification(QStringLiteral("Removed legacy transfer notification shortcut"));
-                }
-            }
-        } catch (const std::exception &error) {
-            logNotification(QStringLiteral("Legacy shortcut cleanup failed: %1").arg(QString::fromLocal8Bit(error.what())));
-        }
     }
 
     ToastNotifier m_notifier{nullptr};
