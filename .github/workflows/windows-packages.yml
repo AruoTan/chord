@@ -31,12 +31,14 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
-      - name: Build the standalone native service and test worker
+      - name: Build native service components and verify the state format
         run: |
           cmake -S daemon/windowsservice -B build-service -A x64
           if ($LASTEXITCODE) { throw 'Service configuration failed' }
           cmake --build build-service --config Release --parallel 2
           if ($LASTEXITCODE) { throw 'Service build failed' }
+          ./build-service/Release/service-state-test.exe
+          if ($LASTEXITCODE) { throw 'Service state format tests failed' }
       - name: Verify registration, user session, recovery, and removal
         run: |
           Start-Transcript -Path build-service/service-test-transcript.log

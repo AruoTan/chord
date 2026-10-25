@@ -137,7 +137,7 @@ int main(int argc, char *argv[])
     bool background = parser.isSet(backgroundOption);
 #ifdef Q_OS_WIN
     if (WindowsService::removalInProgressForCurrentUser()) {
-        qWarning() << "Background service removal is in progress; finish --service-unregister before starting KDE Connect";
+        qWarning() << "Background service setup or removal is incomplete; finish --service-register or --service-unregister before starting KDE Connect";
         return 1;
     }
     background = background || parser.isSet(embeddingOption) || WindowsService::registeredForCurrentUser();

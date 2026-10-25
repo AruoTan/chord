@@ -22,14 +22,22 @@ Register starts the service immediately and updates an existing registration.
 Unregister stops the service and its owned worker, and removes the registration.
 Repeating unregister is harmless. Pairing data and the user installation are
 retained. Elevating with another account registers that account instead.
-User-state backup and cleanup use the desktop user's permissions, open the HKCU
-root for reading, and request write or delete access only on the affected subkeys.
+User-state backup and cleanup use the desktop user's permissions. Before dropping
+elevation, the helper resolves that account's directories and opens its loaded
+`HKEY_USERS\<SID>` hive for reading. Subsequent operations request write or delete
+access only on the affected notification subkeys. It does not use
+`RegOpenCurrentUser` while impersonating the user-state token. This token is a
+restricted copy of the helper's own primary token: administrative groups are
+disabled, administrative privileges are removed, and integrity is set to medium. It is explicitly
+duplicated at `SecurityImpersonation` level instead of using a linked UAC token,
+which may allow identification but fail file access with error 1346. The same
+restricted path is used when UAC is disabled, including on CI runners.
 Registry permissions are not changed. Configuration failures include the numeric
 system error code even when the C++ runtime cannot describe it.
-Registry snapshots use `SHCopyKeyW` to copy values and subkeys without copying
-security descriptors. Restoring a pre-existing tree removes service-added data
-and copies the saved values into existing keys, preserving their ACLs. Keys
-that must be recreated use normal inherited permissions.
+Registry snapshots store names, types and raw value bytes in a file, without
+copying security descriptors. Restoring a pre-existing tree removes service-added
+data and writes saved values into existing keys, preserving their ACLs. Keys that
+must be recreated use normal inherited permissions.
 
 The first registration records any existing legacy transfer-notification shortcut,
 notification registry keys and service runtime files. Updating or registering
@@ -43,15 +51,26 @@ removed. Configuration, certificates, paired devices and unrelated files remain.
 An obsolete `KDE Connect Transfers.lnk` owned by the notification identity is
 deleted rather than restored. An unrelated shortcut with the same name is preserved.
 
-The temporary snapshot is stored under `HKCU\Software\KDEConnectBackgroundServiceState`
-and `%LOCALAPPDATA%\kdeconnect\service-state`, then removed after restoration.
+The snapshot and cleanup progress are stored in
+`%LOCALAPPDATA%\kdeconnect\service-state\state.bin`; original runtime files are
+backed up alongside it. The versioned binary file preserves UTF-16 registry names,
+value types, and raw data. It is flushed and atomically replaced, and rejects
+truncated, unsupported or oversized snapshots before changing system state.
+Snapshots are limited to 64 MiB. This storage adds no Qt or JSON dependency to
+the privileged service host.
+Older `HKCU\Software\KDEConnectBackgroundServiceState` snapshots are imported
+automatically. Their original baseline and pending cleanup flags are retained;
+the old key is deleted only after the file snapshot has been published. New
+registrations do not create that custom registry key.
 If cleanup fails, the command reports failure and retains recovery information;
 repeat `--service-unregister` after resolving the error. A cleanup retry does not
 overwrite state already restored successfully. While removal is in progress or
-awaiting a retry, the daemon refuses startup so D-Bus or notification activation
-cannot recreate the integration being removed. Finish removal before registering
-or starting again. Services installed by older
-versions have no original snapshot: removal deletes only the known integration
+awaiting a retry, the daemon reads the file's startup gate and refuses startup so
+D-Bus or notification activation cannot recreate the integration being removed.
+Incomplete or unreadable state headers also block startup. The legacy registry
+gate remains readable until its snapshot is migrated. Finish removal before
+registering or starting again. Services installed without an original snapshot
+use legacy cleanup: removal deletes only the known integration
 and runtime items listed above, while retaining user configuration and pairing.
 
 The supervisor is named `KDEConnectBackground-<user SID>`. Its small standalone
@@ -169,16 +188,20 @@ terminated.
 - `Get-Service "KDEConnectBackground-*"` reports supervisor state, which does
   not imply a phone is connected or even that the user is logged in.
 
-The Windows workflow first builds this directory without Qt and exercises real
+The Windows workflow first builds this directory without Qt and runs
+`servicestatetest.cpp` to check typed registry data, UTF-16 names, format validation,
+truncated files and the startup gate header. The same format tests can run on
+Linux using the two `servicestate*.cpp` sources.
+It then exercises real
 SCM registration, token/session selection, protected host installation, process
 interruption, heartbeat timeout, SCM crash recovery, deliberate stop, repeat
 registration, and repeat removal using `testworker.cpp`. The fixture never loads
 user pairing data. It also verifies desktop integration cleanup, restoration of
 pre-existing files and registry values, preservation across repeated registration,
 unnamed values, expandable strings, multi-strings, binary and 64-bit data,
-source ACL isolation in backups, existing ACL preservation during restoration,
+file snapshot preservation and user ownership, registry-state migration, existing ACL preservation during restoration,
 removal of service-created values and nested keys,
-recovery after a cleanup failure, and legacy-service removal. Registry handles
+corrupt-state refusal, recovery after a cleanup failure, and legacy-service removal. Registry handles
 are explicitly closed before removal or re-registration. The workflow uploads
 both the supervisor log and a transcript of all test output, including failures.
 Failed helper invocations include their merged output and decimal/hexadecimal

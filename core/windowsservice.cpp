@@ -4,6 +4,7 @@
 
 #include "windowsservice.h"
 #include "daemon/windowsservice/desktopintegration.h"
+#include "daemon/windowsservice/servicestate.h"
 
 #include <windows.h>
 
@@ -12,6 +13,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QProcess>
+#include <QStandardPaths>
 #include <QTextStream>
 
 bool WindowsService::registeredForCurrentUser()
@@ -38,10 +40,34 @@ bool WindowsService::registeredForCurrentUser()
 
 bool WindowsService::removalInProgressForCurrentUser()
 {
+    const auto config = QDir(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)).filePath(QStringLiteral("kdeconnect"));
+    const auto path =
+        QDir(config).filePath(QString::fromWCharArray(ServiceState::directoryName) + QLatin1Char('/') + QString::fromWCharArray(ServiceState::fileName));
+    HANDLE file = CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()),
+                              GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr,
+                              OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL,
+                              nullptr);
+    if (file != INVALID_HANDLE_VALUE) {
+        ServiceState::Header header;
+        DWORD bytes = 0;
+        LARGE_INTEGER size{};
+        const bool read = GetFileSizeEx(file, &size) && size.QuadPart >= static_cast<LONGLONG>(ServiceState::minimumSize)
+            && size.QuadPart <= static_cast<LONGLONG>(ServiceState::maximumSize) && ReadFile(file, &header, sizeof(header), &bytes, nullptr)
+            && bytes == sizeof(header);
+        CloseHandle(file);
+        return !read || ServiceState::blocksStartup(header);
+    }
+    const DWORD error = GetLastError();
+    if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+        return true;
+    }
     DWORD removing = 0;
     DWORD bytes = sizeof(removing);
-    return RegGetValueW(HKEY_CURRENT_USER, WindowsDesktop::stateKey, L"Removing", RRF_RT_REG_DWORD, nullptr, &removing, &bytes) == ERROR_SUCCESS
-        && removing == 1;
+    const auto result = RegGetValueW(HKEY_CURRENT_USER, WindowsDesktop::legacyStateKey, L"Removing", RRF_RT_REG_DWORD, nullptr, &removing, &bytes);
+    return (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND && result != ERROR_PATH_NOT_FOUND) || (result == ERROR_SUCCESS && removing == 1);
 }
 
 int WindowsService::configure(bool install)
