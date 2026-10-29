@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: CC0-1.0
+
+name: Android checks and APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+    tags: ['v*']
+    paths:
+      - 'android/**'
+      - 'docs/features/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'docs/features/**'
+      - '.github/workflows/android.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-lint-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21 and Gradle dependency cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: |
+            android/*.gradle.kts
+            android/gradle.properties
+            android/gradle/libs.versions.toml
+            android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Accept Android SDK licenses
+        run: |
+          android_sdkmanager="${ANDROID_HOME:?Android SDK is missing}/cmdline-tools/latest/bin/sdkmanager"
+          (yes || true) | "$android_sdkmanager" --licenses
+
+      - name: Build debug APK, lint and run unit tests
+        run: ./gradlew --no-daemon -Pci --console=plain assembleDebug lintDebug testDebugUnitTest
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: chord-android-debug-${{ github.sha }}
+          path: android/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload lint and test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chord-android-reports-${{ github.sha }}
+          path: |
+            android/build/reports/
+            android/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 7

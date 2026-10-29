@@ -1,0 +1,61 @@
+package org.kde.kdeconnect
+
+import android.os.SystemClock
+import org.kde.kdeconnect.helpers.ThreadHelper
+import java.net.InetAddress
+
+class DeviceHost private constructor(val host: String) {
+
+    data class PingResult(val latency: Long?)
+
+    /** The amount of milliseconds the ping request took or null it's in progress */
+    var ping: PingResult? = null
+        private set
+
+    /**
+     * Checks if the host can be reached over the network.
+     * @param callback Callback for updating UI elements
+     */
+    fun checkReachable(callback: () -> Unit) {
+        ThreadHelper.execute {
+            try {
+                val address = InetAddress.getByName(this.host)
+                val startTime = SystemClock.elapsedRealtime()
+                val pingable = address.isReachable(PING_TIMEOUT)
+                val delayMillis = SystemClock.elapsedRealtime() - startTime
+                val pingResult = PingResult(if (pingable) delayMillis else null)
+                ping = pingResult
+            }
+            catch (_: Exception) {
+                ping = PingResult(null)
+            }
+            callback()
+        }
+    }
+
+    init {
+        require(isValidDeviceHost(host)) { "Invalid host" }
+    }
+
+    override fun toString(): String {
+        return this.host
+    }
+
+    companion object {
+        /** Ping timeout */
+        private const val PING_TIMEOUT = 3_000
+        private val hostnameValidityPattern = Regex("^[0-9A-Za-z.:%_-]+$")
+
+        fun isValidDeviceHost(host: String): Boolean {
+            return hostnameValidityPattern.matches(host)
+        }
+
+        fun toDeviceHostOrNull(host: String): DeviceHost? {
+            return if (isValidDeviceHost(host)) {
+                DeviceHost(host)
+            } else {
+                null
+            }
+        }
+    }
+}

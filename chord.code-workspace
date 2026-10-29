@@ -1,0 +1,140 @@
+{
+    "folders": [
+        {
+            "name": "Chord",
+            "path": "."
+        },
+        {
+            "name": "Desktop",
+            "path": "desktop"
+        },
+        {
+            "name": "Android",
+            "path": "android"
+        },
+        {
+            "name": "Docs",
+            "path": "docs"
+        }
+    ],
+    "settings": {
+        "files.exclude": {
+            "desktop": true,
+            "android": true,
+            "docs": true,
+            ".local": true
+        },
+        "search.exclude": {
+            "**/.local": true,
+            "**/.gradle": true,
+            "**/.kotlin": true,
+            "**/build": true,
+            "**/build-*": true
+        },
+        "git.openRepositoryInParentFolders": "always",
+        "cmake.configureOnOpen": false,
+        "cmake.sourceDirectory": "${workspaceFolder}",
+        "cmake.buildDirectory": "${workspaceFolder}/build",
+        "cmake.configureSettings": {
+            "CMAKE_BUILD_TYPE": "Debug",
+            "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+            "CMAKE_INSTALL_PREFIX": "${workspaceFolder}/build/install"
+        }
+    },
+    "tasks": {
+        "version": "2.0.0",
+        "tasks": [
+            {
+                "label": "Desktop: configure",
+                "type": "process",
+                "command": "cmake",
+                "args": [
+                    "-S", "${workspaceFolder:Desktop}",
+                    "-B", "${workspaceFolder:Desktop}/build",
+                    "-G", "Ninja",
+                    "-DCMAKE_BUILD_TYPE=Debug",
+                    "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+                    "-DCMAKE_INSTALL_PREFIX=${workspaceFolder:Desktop}/build/install"
+                ],
+                "options": {
+                    "cwd": "${workspaceFolder:Desktop}"
+                },
+                "problemMatcher": []
+            },
+            {
+                "label": "Desktop: build",
+                "type": "process",
+                "command": "cmake",
+                "args": [
+                    "--build", "${workspaceFolder:Desktop}/build",
+                    "--parallel", "2"
+                ],
+                "options": {
+                    "cwd": "${workspaceFolder:Desktop}"
+                },
+                "dependsOn": "Desktop: configure",
+                "group": "build",
+                "problemMatcher": "$gcc"
+            },
+            {
+                "label": "Desktop: test",
+                "type": "process",
+                "command": "dbus-run-session",
+                "args": [
+                    "--", "xvfb-run", "-a", "ctest",
+                    "--test-dir", "${workspaceFolder:Desktop}/build",
+                    "--output-on-failure"
+                ],
+                "options": {
+                    "cwd": "${workspaceFolder:Desktop}"
+                },
+                "dependsOn": "Desktop: build",
+                "group": "test",
+                "problemMatcher": []
+            },
+            {
+                "label": "Android: build debug APK",
+                "type": "shell",
+                "command": "./gradlew",
+                "windows": {
+                    "command": ".\\gradlew.bat"
+                },
+                "args": ["--no-daemon", "assembleDebug"],
+                "options": {
+                    "cwd": "${workspaceFolder:Android}",
+                    "env": {
+                        "GRADLE_USER_HOME": "${workspaceFolder:Chord}/.local/gradle"
+                    }
+                },
+                "group": "build",
+                "problemMatcher": []
+            },
+            {
+                "label": "Android: check",
+                "type": "shell",
+                "command": "./gradlew",
+                "windows": {
+                    "command": ".\\gradlew.bat"
+                },
+                "args": [
+                    "--no-daemon", "assembleDebug", "lintDebug", "testDebugUnitTest"
+                ],
+                "options": {
+                    "cwd": "${workspaceFolder:Android}",
+                    "env": {
+                        "GRADLE_USER_HOME": "${workspaceFolder:Chord}/.local/gradle"
+                    }
+                },
+                "group": "test",
+                "problemMatcher": []
+            },
+            {
+                "label": "Chord: check both",
+                "dependsOn": ["Desktop: test", "Android: check"],
+                "dependsOrder": "sequence",
+                "group": "test",
+                "problemMatcher": []
+            }
+        ]
+    }
+}

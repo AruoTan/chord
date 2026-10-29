@@ -1,0 +1,144 @@
+/*
+ * SPDX-FileCopyrightText: 2016 Saikrishna Arcot <saiarcot895@gmail.com>
+ * SPDX-FileCopyrightText: 2024 Rob Emery <git@mintsoft.net>
+ *
+ * SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
+ */
+package org.kde.kdeconnect.backends.bluetooth
+
+import android.bluetooth.BluetoothDevice
+import android.content.Context
+import android.util.Log
+import androidx.annotation.WorkerThread
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import org.kde.kdeconnect.Device
+import org.kde.kdeconnect.DeviceInfo
+import org.kde.kdeconnect.NetworkPacket
+import org.kde.kdeconnect.backends.BaseLink
+import org.kde.kdeconnect.extensions.closeSafe
+import org.kde.kdeconnect.helpers.readLineBounded
+import java.io.BufferedInputStream
+import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
+import java.util.UUID
+
+class BluetoothLink(
+    context: Context,
+    private val connection: ConnectionMultiplexer,
+    input: InputStream,
+    private val output: OutputStream,
+    private val remoteAddress: BluetoothDevice,
+    override val deviceInfo: DeviceInfo,
+    linkProvider: BluetoothLinkProvider
+) : BaseLink(context, linkProvider) {
+
+    override val name = "BluetoothLink"
+
+    private var continueAccepting = true
+    private val receivingThread = Thread(object : Runnable {
+        override fun run() {
+            try {
+                val stream = BufferedInputStream(input)
+                while (continueAccepting) {
+                    val message = readLineBounded(stream, MAX_PACKET_SIZE)
+                    if (!continueAccepting) break
+                    processMessage(message)
+                }
+            } catch (e: IOException) {
+                Log.e("BluetoothLink/receiving", "Connection to ${remoteAddress.address} likely broken.", e)
+                disconnect()
+            }
+        }
+
+        private fun processMessage(message: String) {
+            val np = try {
+                NetworkPacket.unserialize(message)
+            } catch (e: SerializationException) {
+                Log.e("BluetoothLink/receiving", "Unable to parse message.", e)
+                return
+            }
+            if (np.hasPayloadTransferInfo()) {
+                try {
+                    val transferUuid = UUID.fromString(np.payloadTransferInfo.getValue("uuid").jsonPrimitive.content)
+                    val payloadInputStream = connection.getChannelInputStream(transferUuid)
+                    np.payload = NetworkPacket.Payload(payloadInputStream, np.payloadSize)
+                } catch (e: Exception) {
+                    Log.e("BluetoothLink/receiving", "Unable to get payload", e)
+                }
+            }
+            packetReceived(np)
+        }
+    })
+
+    fun startListening() {
+        receivingThread.start()
+    }
+
+    override fun disconnect() {
+        continueAccepting = false
+        connection.closeSafe()
+        (linkProvider as BluetoothLinkProvider).disconnectedLink(this, remoteAddress)
+    }
+
+    @Throws(SerializationException::class, IOException::class)
+    private fun sendMessage(np: NetworkPacket) {
+        val message = np.serialize().toByteArray(Charsets.UTF_8)
+        output.write(message)
+    }
+
+    @WorkerThread
+    @Throws(IOException::class)
+    override fun sendPacket(np: NetworkPacket, callback: Device.SendPacketStatusCallback, sendPayloadFromSameThread: Boolean): Boolean {
+        // sendPayloadFromSameThread is ignored, we always send from the same thread!
+
+        return try {
+            var transferUuid: UUID? = null
+            if (np.hasPayload()) {
+                transferUuid = connection.newChannel()
+                np.payloadTransferInfo = buildJsonObject {
+                    put("uuid", JsonPrimitive(transferUuid.toString()))
+                }
+            }
+            sendMessage(np)
+            if (transferUuid != null) {
+                try {
+                    connection.getChannelOutputStream(transferUuid).use { payloadStream ->
+                        val BUFFER_LENGTH = 1024
+                        val buffer = ByteArray(BUFFER_LENGTH)
+                        var bytesRead = 0
+                        var progress: Long = 0
+                        val stream = np.payload!!.inputStream!!
+                        while (!np.isCanceled && stream.read(buffer).also { bytesRead = it } != -1) {
+                            progress += bytesRead.toLong()
+                            payloadStream.write(buffer, 0, bytesRead)
+                            if (np.payloadSize > 0) {
+                                callback.onPayloadProgressChanged((100 * progress / np.payloadSize).toInt())
+                            }
+                        }
+                        payloadStream.flush()
+                    }
+                } catch (e: Exception) {
+                    callback.onFailure(e)
+                    return false
+                }
+            }
+            if (!np.isCanceled) {
+                callback.onSuccess()
+            }
+            true
+        } catch (e: Exception) {
+            callback.onFailure(e)
+            false
+        } finally {
+            np.payload?.close()
+        }
+    }
+
+    companion object {
+        private const val MAX_PACKET_SIZE = 32 * 1024 * 1024
+    }
+}

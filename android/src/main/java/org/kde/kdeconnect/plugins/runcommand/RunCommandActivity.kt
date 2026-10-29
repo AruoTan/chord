@@ -1,0 +1,130 @@
+/*
+ * SPDX-FileCopyrightText: 2015 Aleix Pol Gonzalez <aleixpol@kde.org>
+ * SPDX-FileCopyrightText: 2015 Albert Vaca Cintora <albertvaka@gmail.com>
+ * SPDX-FileCopyrightText: 2026 Johann Specht <sajeg.dev@gmail.com>
+ *
+ * SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
+ */
+package org.kde.kdeconnect.plugins.runcommand
+
+import android.content.ClipData
+import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
+import androidx.activity.compose.setContent
+import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.ui.platform.Clipboard
+import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.toClipEntry
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import org.kde.kdeconnect.Device
+import org.kde.kdeconnect.KdeConnect
+import org.kde.kdeconnect_tp.R
+
+
+class RunCommandActivity : AppCompatActivity() {
+
+    val commandList = mutableStateListOf<CommandEntry>()
+
+    private lateinit var deviceId: String
+
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        Log.d("RunCommandActivity", "Launched")
+        deviceId = intent.getStringExtra(EXTRA_DEVICE_ID)!!
+        val device = KdeConnect.getInstance().getDevice(deviceId)
+        val plugin = device?.getPlugin<RunCommandPlugin>()
+        if (plugin == null) {
+            finish()
+            return
+        }
+
+        for (info in plugin.commandList) {
+            commandList.add(CommandEntry(info))
+        }
+        commandList.sortBy { it.name.lowercase() }
+
+
+        setContent {
+            val clipboardManager = LocalClipboard.current
+
+            RunCommandScreen(
+                plugin = plugin,
+                device = device,
+                commandList = commandList,
+                onBackPressedDispatcher = onBackPressedDispatcher,
+                onCopyUrlToClipboard = {
+                    copyCommandToClipboard(device, it, clipboardManager)
+                },
+                onUpdate = {
+                    updateList()
+                }
+            )
+        }
+    }
+
+    private fun copyCommandToClipboard(
+        device: Device,
+        command: CommandEntry,
+        clipboardManager: Clipboard
+    ) {
+        val url = "kdeconnect://runcommand/${device.deviceId}/${command.key}"
+        val clipData = ClipData.newPlainText("Command", url)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            clipboardManager.setClipEntry(clipData.toClipEntry())
+        }
+        val toast = Toast.makeText(
+            this,
+            R.string.clipboard_toast,
+            Toast.LENGTH_SHORT
+        )
+        toast.show()
+    }
+
+    private fun updateList() {
+        commandList.removeAll(commandList)
+        val plugin = KdeConnect.getInstance().getDevicePlugin<RunCommandPlugin>(deviceId) ?: return
+
+        for (info in plugin.commandList) {
+            commandList.add(CommandEntry(info))
+        }
+        commandList.sortBy { it.name.lowercase() }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val plugin =
+            KdeConnect.getInstance().getDevicePlugin<RunCommandPlugin>(deviceId)
+        if (plugin == null) {
+            finish()
+            return
+        }
+    }
+
+    companion object {
+        const val EXTRA_DEVICE_ID = "deviceId"
+    }
+}
+
+
+enum class RunCommandStatus {
+    STDERR,
+    STDOUT,
+    COMMAND_RUNNING,
+    COMMAND_SUCCESSFUL,
+    COMMAND_FAILED,
+}
+
+data class RunCommandOutput(
+    val commandStatus: RunCommandStatus,
+    val string: String,
+    val id: Int,
+) {
+    val isCommand: Boolean
+        get() = commandStatus == RunCommandStatus.COMMAND_RUNNING || commandStatus == RunCommandStatus.COMMAND_SUCCESSFUL || commandStatus == RunCommandStatus.COMMAND_FAILED
+}

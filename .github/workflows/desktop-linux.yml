@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: CC0-1.0
+
+name: Desktop Linux checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+    tags: ['v*']
+    paths:
+      - 'desktop/**'
+      - 'docs/features/**'
+      - '.github/workflows/desktop-linux.yml'
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'docs/features/**'
+      - '.github/workflows/desktop-linux.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop
+    steps:
+      - name: Install checkout prerequisites
+        working-directory: .
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git
+
+      - uses: actions/checkout@v4
+
+      - name: Install desktop dependencies
+        run: bash scripts/install-dependencies.sh
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_INSTALL_PREFIX="$PWD/build/install"
+
+      - name: Build
+        run: cmake --build build --parallel 2
+
+      - name: Test with an isolated D-Bus session and display
+        run: dbus-run-session -- xvfb-run -a ctest --test-dir build --output-on-failure
+
+      - name: Upload configure and test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chord-desktop-linux-checks-${{ github.sha }}
+          path: |
+            desktop/build/CMakeFiles/CMakeConfigureLog.yaml
+            desktop/build/Testing/Temporary/
+          if-no-files-found: ignore
+          retention-days: 7

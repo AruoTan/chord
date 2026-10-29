@@ -1,8 +1,9 @@
 {
     "init": true,
-    "name": "KDE Connect",
+    "name": "Chord",
     "build": {
-        "dockerfile": "Dockerfile"
+        "dockerfile": "Dockerfile",
+        "context": "../desktop/scripts"
     },
     "remoteUser": "vscode",
     "capAdd": ["SYS_PTRACE"],
@@ -17,11 +18,12 @@
             ],
             "settings": {
                 "cmake.generator": "Ninja",
-                "cmake.buildDirectory": "${workspaceFolder}/build",
+                "cmake.sourceDirectory": "${workspaceFolder}/desktop",
+                "cmake.buildDirectory": "${workspaceFolder}/desktop/build",
                 "cmake.configureSettings": {
                     "CMAKE_BUILD_TYPE": "Debug",
                     "CMAKE_EXPORT_COMPILE_COMMANDS": true,
-                    "CMAKE_INSTALL_PREFIX": "${workspaceFolder}/build/install"
+                    "CMAKE_INSTALL_PREFIX": "${workspaceFolder}/desktop/build/install"
                 }
             }
         }
